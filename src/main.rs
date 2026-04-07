@@ -1,8 +1,9 @@
 use std::{env, error::Error, fs, path::Path};
 
-use crate::{bencode::encode_object};
+use crate::{bencode::encode_object, torrent::Torrent};
 
 mod bencode;
+mod torrent;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args().collect();
@@ -17,6 +18,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let parsed = bencode::decode_object(&bytes);
 
     assert_eq!(encode_object(&parsed), bytes);
+
+    let torrent = Torrent::try_from(parsed)?;
+
+    println!(
+        "Name: {}\nLength: {}\nAnnounce: {}\nPiece length: {}\nInfo hash: {:?}",
+        torrent.name, torrent.length, torrent.announce, torrent.piece_length, torrent.info_hash
+    );
 
     Ok(())
 }

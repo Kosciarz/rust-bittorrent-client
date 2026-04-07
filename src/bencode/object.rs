@@ -1,23 +1,19 @@
 use std::collections::BTreeMap;
-use std::vec::Vec;
 
 use crate::bencode::decode::Parsed;
 
 #[derive(Debug)]
-pub enum Object {
+pub enum Object<'data> {
     Number(i64),
     ByteArray(Vec<u8>),
-    List(Vec<Parsed>),
-    Dictionary(BTreeMap<Vec<u8>, Parsed>),
+    List(Vec<Parsed<'data>>),
+    Dictionary(BTreeMap<Vec<u8>, Parsed<'data>>),
 }
-
-type Key = String;
-type KeyType = String;
 
 #[derive(Debug)]
 pub enum ExtractError {
-    MissingKey(Key),
-    InvalidKey(Key, KeyType),
+    MissingKey(String),
+    InvalidKey(String, String),
     InvalidUtf8(std::string::FromUtf8Error),
     InvalidPiecesLength(usize, usize),
 }
@@ -50,32 +46,33 @@ impl From<std::string::FromUtf8Error> for ExtractError {
 fn get_value<'a>(
     dict: &'a BTreeMap<Vec<u8>, Parsed>,
     key: &[u8],
-) -> Result<(&'a Parsed, String), ExtractError> {
-    let key_str = String::from_utf8_lossy(key).to_string();
-    let value = dict
-        .get(key)
-        .ok_or(ExtractError::MissingKey(key_str.clone()))?;
-    Ok((value, key_str))
+) -> Result<&'a Parsed<'a>, ExtractError> {
+    dict.get(key).ok_or(ExtractError::MissingKey(
+        String::from_utf8_lossy(key).to_string(),
+    ))
 }
 
 pub fn extract_num(dict: &BTreeMap<Vec<u8>, Parsed>, key: &[u8]) -> Result<i64, ExtractError> {
-    let (value, key_str) = get_value(dict, key)?;
+    let value = get_value(dict, key)?;
 
     match &value.object {
         Object::Number(num) => Ok(*num),
-        _ => Err(ExtractError::InvalidKey(key_str, String::from("number"))),
+        _ => Err(ExtractError::InvalidKey(
+            String::from_utf8_lossy(key).to_string(),
+            String::from("number"),
+        )),
     }
 }
 
 pub fn extract_str(dict: &BTreeMap<Vec<u8>, Parsed>, key: &[u8]) -> Result<String, ExtractError> {
-    let (value, key_str) = get_value(dict, key)?;
+    let value = get_value(dict, key)?;
 
     match &value.object {
         Object::ByteArray(bytes) => {
             String::from_utf8(bytes.clone()).map_err(|err| ExtractError::InvalidUtf8(err))
         }
         _ => Err(ExtractError::InvalidKey(
-            key_str,
+            String::from_utf8_lossy(key).to_string(),
             String::from("byte array"),
         )),
     }
@@ -84,13 +81,13 @@ pub fn extract_str(dict: &BTreeMap<Vec<u8>, Parsed>, key: &[u8]) -> Result<Strin
 pub fn extract_dict<'a>(
     dict: &'a BTreeMap<Vec<u8>, Parsed>,
     key: &[u8],
-) -> Result<&'a BTreeMap<Vec<u8>, Parsed>, ExtractError> {
-    let (value, key_str) = get_value(dict, key)?;
+) -> Result<&'a BTreeMap<Vec<u8>, Parsed<'a>>, ExtractError> {
+    let value = get_value(dict, key)?;
 
     match &value.object {
         Object::Dictionary(d) => Ok(d),
         _ => Err(ExtractError::InvalidKey(
-            key_str,
+            String::from_utf8_lossy(key).to_string(),
             String::from("dictionary"),
         )),
     }
@@ -99,11 +96,14 @@ pub fn extract_dict<'a>(
 pub fn extract_pieces<const N: usize>(
     dict: &BTreeMap<Vec<u8>, Parsed>,
 ) -> Result<Vec<[u8; N]>, ExtractError> {
-    let (value, key_str) = get_value(dict, b"pieces")?;
+    let value = get_value(dict, b"pieces")?;
 
     match &value.object {
         Object::ByteArray(b) => chunk_array::<N>(b),
-        _ => Err(ExtractError::InvalidKey(key_str, String::from("string"))),
+        _ => Err(ExtractError::InvalidKey(
+            String::from_utf8_lossy(b"pieces").to_string(),
+            String::from("string"),
+        )),
     }
 }
 

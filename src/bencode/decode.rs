@@ -9,17 +9,17 @@ use crate::bencode::{
 };
 
 #[derive(Debug)]
-struct Cursor<'a> {
-    data: &'a [u8],
+struct Cursor<'data> {
+    data: &'data [u8],
     pos: usize,
 }
 
-impl<'a> Cursor<'a> {
-    fn new(data: &'a [u8]) -> Self {
+impl<'data> Cursor<'data> {
+    fn new(data: &'data [u8]) -> Self {
         Self { data, pos: 0 }
     }
 
-    fn peek(&mut self) -> Option<u8> {
+    fn peek(&self) -> Option<u8> {
         self.data.get(self.pos).copied()
     }
 
@@ -32,20 +32,24 @@ impl<'a> Cursor<'a> {
     fn position(&self) -> usize {
         self.pos
     }
+
+    fn slice(&self, start: usize, end: usize) -> &'data [u8] {
+        &self.data[start..end]
+    }
 }
 
 #[derive(Debug)]
-pub struct Parsed {
-    pub object: Object,
-    pub span: (usize, usize),
+pub struct Parsed<'data> {
+    pub object: Object<'data>,
+    pub data: &'data [u8],
 }
 
-pub fn decode_object(bytes: &[u8]) -> Parsed {
+pub fn decode_object<'a>(bytes: &'a [u8]) -> Parsed<'a> {
     let mut cursor = Cursor::new(bytes);
     decode(&mut cursor)
 }
 
-fn decode(cursor: &mut Cursor) -> Parsed {
+fn decode<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     return match cursor.peek() {
         Some(DICTIONARY_START) => decode_dictionary(cursor),
         Some(LIST_START) => decode_list(cursor),
@@ -55,14 +59,7 @@ fn decode(cursor: &mut Cursor) -> Parsed {
     };
 }
 
-fn decode_key(cursor: &mut Cursor) -> Vec<u8> {
-    match decode_byte_array(cursor).object {
-        Object::ByteArray(b) => b,
-        _ => panic!("Expected byte array for dictionary key"),
-    }
-}
-
-fn decode_dictionary(cursor: &mut Cursor) -> Parsed {
+fn decode_dictionary<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'd'"), DICTIONARY_START);
 
@@ -84,11 +81,11 @@ fn decode_dictionary(cursor: &mut Cursor) -> Parsed {
 
     Parsed {
         object: Object::Dictionary(dict),
-        span: (start, end),
+        data: cursor.slice(start, end),
     }
 }
 
-fn decode_list(cursor: &mut Cursor) -> Parsed {
+fn decode_list<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'l'"), LIST_START);
 
@@ -106,49 +103,35 @@ fn decode_list(cursor: &mut Cursor) -> Parsed {
 
     Parsed {
         object: Object::List(list),
-        span: (start, end),
+        data: cursor.slice(start, end),
     }
 }
 
-fn read_until(cursor: &mut Cursor, terminator: u8) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    while let Some(b) = cursor.next() {
-        if b == terminator {
-            break;
-        }
-        bytes.push(b);
-    }
-    bytes
-}
-
-fn parse_and_check_for_leading_zeros(bytes: &[u8]) -> &str {
-    let num_str = str::from_utf8(&bytes).unwrap();
-    if num_str.len() > 1 && num_str.starts_with('0') {
-        panic!("Leading zeros are not allowed");
-    }
-    num_str
-}
-
-fn decode_number(cursor: &mut Cursor) -> Parsed {
+fn decode_number<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'i'"), NUMBER_START);
 
     let bytes = read_until(cursor, NUMBER_END);
-    let num_str = parse_and_check_for_leading_zeros(&bytes);
-    let num: i64 = num_str.parse().unwrap();
+    if bytes.is_empty() {
+        panic!("No digits found in number");
+    }
+
+    let num_str = parse_and_check_for_leading_zeros(bytes);
+    let num: i64 = num_str.parse().expect("Invalid number format");
 
     let end = cursor.position();
 
     Parsed {
         object: Object::Number(num),
-        span: (start, end),
+        data: cursor.slice(start, end),
     }
 }
 
-fn decode_byte_array(cursor: &mut Cursor) -> Parsed {
+fn decode_byte_array<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     let start = cursor.position();
+
     let len_bytes = read_until(cursor, BYTE_ARRAY_DIVIDER);
-    let length_str = parse_and_check_for_leading_zeros(&len_bytes);
+    let length_str = parse_and_check_for_leading_zeros(len_bytes);
     let len: usize = length_str.parse().unwrap();
 
     let mut bytes = Vec::new();
@@ -166,8 +149,45 @@ fn decode_byte_array(cursor: &mut Cursor) -> Parsed {
 
     Parsed {
         object: Object::ByteArray(bytes),
-        span: (start, end),
+        data: cursor.slice(start, end),
     }
+}
+
+fn decode_key<'data>(cursor: &mut Cursor<'data>) -> Vec<u8> {
+    match decode_byte_array(cursor).object {
+        Object::ByteArray(b) => b,
+        _ => panic!("Expected byte array for dictionary key"),
+    }
+}
+
+fn read_until<'data>(cursor: &mut Cursor<'data>, terminator: u8) -> &'data [u8] {
+    let start = cursor.position();
+    let mut found = false;
+
+    while let Some(b) = cursor.peek() {
+        if b == terminator {
+            found = true;
+            break;
+        }
+        cursor.next();
+    }
+
+    let end = cursor.position();
+    if !found {
+        panic!("Terminator byte '{}' not found", terminator as char);
+    }
+
+    cursor.next();
+
+    cursor.slice(start, end)
+}
+
+fn parse_and_check_for_leading_zeros(bytes: &[u8]) -> &str {
+    let num_str = str::from_utf8(&bytes).unwrap();
+    if num_str.len() > 1 && num_str.starts_with('0') {
+        panic!("Leading zeros are not allowed");
+    }
+    num_str
 }
 
 // #[cfg(test)]
