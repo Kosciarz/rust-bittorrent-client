@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use crate::bencode::{
-    Object,
+    ObjectType,
     constants::{
         BYTE_ARRAY_DIVIDER, DICTIONARY_END, DICTIONARY_START, LIST_END, LIST_START, NINE_BYTE,
         NUMBER_END, NUMBER_START, ZERO_BYTE,
     },
+    object::Object,
 };
 
 #[derive(Debug)]
@@ -38,18 +39,12 @@ impl<'data> Cursor<'data> {
     }
 }
 
-#[derive(Debug)]
-pub struct Parsed<'data> {
-    pub object: Object<'data>,
-    pub data: &'data [u8],
-}
-
-pub fn decode_object<'a>(bytes: &'a [u8]) -> Parsed<'a> {
+pub fn decode_object(bytes: &[u8]) -> Object {
     let mut cursor = Cursor::new(bytes);
     decode(&mut cursor)
 }
 
-fn decode<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
+fn decode(cursor: &mut Cursor) -> Object {
     return match cursor.peek() {
         Some(DICTIONARY_START) => decode_dictionary(cursor),
         Some(LIST_START) => decode_list(cursor),
@@ -59,7 +54,7 @@ fn decode<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
     };
 }
 
-fn decode_dictionary<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
+fn decode_dictionary(cursor: &mut Cursor) -> Object {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'd'"), DICTIONARY_START);
 
@@ -79,13 +74,13 @@ fn decode_dictionary<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
 
     let end = cursor.position();
 
-    Parsed {
-        object: Object::Dictionary(dict),
-        data: cursor.slice(start, end),
-    }
+    Object::new(
+        ObjectType::Dictionary(dict),
+        cursor.slice(start, end).to_vec(),
+    )
 }
 
-fn decode_list<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
+fn decode_list(cursor: &mut Cursor) -> Object {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'l'"), LIST_START);
 
@@ -101,13 +96,10 @@ fn decode_list<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
 
     let end = cursor.position();
 
-    Parsed {
-        object: Object::List(list),
-        data: cursor.slice(start, end),
-    }
+    Object::new(ObjectType::List(list), cursor.slice(start, end).to_vec())
 }
 
-fn decode_number<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
+fn decode_number(cursor: &mut Cursor) -> Object {
     let start = cursor.position();
     assert_eq!(cursor.next().expect("Expected 'i'"), NUMBER_START);
 
@@ -121,13 +113,10 @@ fn decode_number<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
 
     let end = cursor.position();
 
-    Parsed {
-        object: Object::Number(num),
-        data: cursor.slice(start, end),
-    }
+    Object::new(ObjectType::Number(num), cursor.slice(start, end).to_vec())
 }
 
-fn decode_byte_array<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
+fn decode_byte_array(cursor: &mut Cursor) -> Object {
     let start = cursor.position();
 
     let len_bytes = read_until(cursor, BYTE_ARRAY_DIVIDER);
@@ -147,15 +136,15 @@ fn decode_byte_array<'data>(cursor: &mut Cursor<'data>) -> Parsed<'data> {
 
     let end = cursor.position();
 
-    Parsed {
-        object: Object::ByteArray(bytes),
-        data: cursor.slice(start, end),
-    }
+    Object::new(
+        ObjectType::ByteArray(bytes),
+        cursor.slice(start, end).to_vec(),
+    )
 }
 
-fn decode_key<'data>(cursor: &mut Cursor<'data>) -> Vec<u8> {
-    match decode_byte_array(cursor).object {
-        Object::ByteArray(b) => b,
+fn decode_key(cursor: &mut Cursor) -> Vec<u8> {
+    match decode_byte_array(cursor).object_type() {
+        ObjectType::ByteArray(b) => b.to_vec(),
         _ => panic!("Expected byte array for dictionary key"),
     }
 }

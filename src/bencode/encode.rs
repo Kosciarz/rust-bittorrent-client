@@ -1,22 +1,24 @@
-use std::{collections::BTreeMap};
+use std::collections::BTreeMap;
 
 use crate::bencode::{
-    Object, constants::{
+    ObjectType,
+    constants::{
         BYTE_ARRAY_DIVIDER, DICTIONARY_END, DICTIONARY_START, LIST_END, LIST_START, NUMBER_END,
         NUMBER_START,
-    }, decode::Parsed
+    },
+    object::Object,
 };
 
-pub fn encode_object(parsed: &Parsed) -> Vec<u8> {
-    match &parsed.object {
-        Object::Number(n) => encode_number(*n),
-        Object::ByteArray(b) => encode_byte_array(b),
-        Object::List(l) => encode_list(l),
-        Object::Dictionary(d) => encode_dictionary(d),
+pub fn encode_object(object: &Object) -> Vec<u8> {
+    match object.object_type() {
+        ObjectType::Number(n) => encode_number(*n),
+        ObjectType::ByteArray(b) => encode_byte_array(b),
+        ObjectType::List(l) => encode_list(l),
+        ObjectType::Dictionary(d) => encode_dictionary(d),
     }
 }
 
-fn encode_dictionary(dictionary: &BTreeMap<Vec<u8>, Parsed>) -> Vec<u8> {
+fn encode_dictionary(dictionary: &BTreeMap<Vec<u8>, Object>) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.push(DICTIONARY_START);
     for key in dictionary.keys() {
@@ -27,7 +29,7 @@ fn encode_dictionary(dictionary: &BTreeMap<Vec<u8>, Parsed>) -> Vec<u8> {
     bytes
 }
 
-fn encode_list(list: &[Parsed]) -> Vec<u8> {
+fn encode_list(list: &[Object]) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.push(LIST_START);
     for item in list {

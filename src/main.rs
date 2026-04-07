@@ -1,6 +1,6 @@
-use std::{env, error::Error, fs, path::Path};
+use std::{env, error::Error, path::Path};
 
-use crate::{bencode::encode_object, torrent::Torrent};
+use crate::torrent::Torrent;
 
 mod bencode;
 mod torrent;
@@ -13,18 +13,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let path = args[1].to_string();
     let path = Path::new(&path);
-
-    let bytes = fs::read(path)?;
-    let parsed = bencode::decode_object(&bytes);
-
-    assert_eq!(encode_object(&parsed), bytes);
-
-    let torrent = Torrent::try_from(parsed)?;
+    let torrent = Torrent::load_from_file(path)?;
 
     println!(
-        "Name: {}\nLength: {}\nAnnounce: {}\nPiece length: {}\nInfo hash: {:?}",
-        torrent.name, torrent.length, torrent.announce, torrent.piece_length, torrent.info_hash
+        "Name: {}\nLength: {}\nAnnounce: {:?}\nAnnounce list: {:?}\nPiece length: {}\nInfo hash: {:?}",
+        torrent.name(),
+        torrent.length(),
+        torrent.announce(),
+        torrent.announce_list(),
+        torrent.piece_length(),
+        torrent.info_hash()
     );
+
+    let path = args[2].to_string();
+    let path = Path::new(&path);
+    Torrent::save_to_file(&torrent, &path)?;
 
     Ok(())
 }

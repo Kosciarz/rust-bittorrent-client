@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, error::Error, fs, path::Path};
+use std::{collections::BTreeMap, error::Error, fs, io, path::Path};
 
 use sha1::{Digest, Sha1};
 
 use crate::bencode::{
     self, ExtractError, Object, ObjectType, decode_object,
-    object::{self, extract_byte_array, extract_dict, extract_list, extract_num, extract_str},
+    object::{extract_byte_array, extract_dict, extract_list, extract_num, extract_str},
 };
 
 pub struct Tracker {
@@ -14,6 +14,10 @@ pub struct Tracker {
 impl Tracker {
     fn new(address: String) -> Self {
         Self { address }
+    }
+
+    pub fn address(&self) -> &String {
+        &self.address
     }
 }
 
@@ -28,6 +32,10 @@ impl std::fmt::Debug for Tracker {
 pub struct Torrent {
     announce: Tracker,
     announce_list: Vec<Tracker>,
+    comment: String,
+    created_by: String,
+    creation_date: u64,
+
     name: String,
     length: u64,
     piece_length: u64,
@@ -39,6 +47,10 @@ impl Torrent {
     fn new(
         tracker: Tracker,
         announce_list: Vec<Tracker>,
+        comment: String, 
+        created_by: String,
+        creation_date: u64,
+
         name: String,
         length: u64,
         piece_length: u64,
@@ -48,6 +60,9 @@ impl Torrent {
         Self {
             announce: tracker,
             announce_list,
+            comment,
+            created_by,
+            creation_date,
             name,
             length,
             piece_length,
@@ -62,6 +77,18 @@ impl Torrent {
 
     pub fn announce_list(&self) -> &Vec<Tracker> {
         &self.announce_list
+    }
+
+    pub fn comment(&self) -> &String {
+        &self.comment
+    }
+
+    pub fn created_by(&self) -> &String {
+        &self.comment
+    }
+
+    pub fn creation_date(&self) -> u64 {
+        self.creation_date
     }
 
     pub fn name(&self) -> &String {
@@ -83,6 +110,26 @@ impl Torrent {
     pub fn info_hash(&self) -> &[u8; 20] {
         &self.info_hash
     }
+
+    pub fn load_from_file(path: &Path) -> Result<Torrent, Box<dyn Error>> {
+        let bytes = fs::read(path)?;
+        let obj = decode_object(&bytes);
+        Torrent::try_from(obj)
+    }
+
+    pub fn save_to_file(torrent: &Torrent, path: &Path) -> io::Result<()> {
+        let obj = Object::from(torrent);
+        let bytes = bencode::encode_object(&obj);
+        fs::write(
+            format!(
+                "{}/{}.torrent",
+                path.to_string_lossy().to_string(),
+                torrent.name()
+            ),
+            bytes,
+        )?;
+        Ok(())
+    }
 }
 
 impl TryFrom<Object> for Torrent {
@@ -96,6 +143,10 @@ impl TryFrom<Object> for Torrent {
 
         let announce = Tracker::new(extract_str(&dict, b"announce")?);
         let announce_list = extract_announce_list(&dict)?;
+        let comment = extract_str(&dict, b"comment")?;
+        let created_by = extract_str(&dict, b"created by")?;
+        let creation_date = u64::try_from(extract_num(&dict, b"creation date")?)
+            .map_err(|_| "creation date is negative or too large")?;
 
         let info_obj = extract_dict(&dict, b"info")?;
         let name = extract_str(&info_obj, b"name")?;
@@ -104,15 +155,14 @@ impl TryFrom<Object> for Torrent {
         let piece_length = u64::try_from(extract_num(&info_obj, b"piece length")?)
             .map_err(|_| "piece length is negative or too large")?;
         let pieces = extract_pieces(&info_obj)?;
-
-        let info_parsed = dict
-            .get(b"info".as_slice())
-            .ok_or(ExtractError::MissingKey("info".into()))?;
-        let info_hash = compute_info_hash(&info_parsed);
+        let info_hash = compute_info_hash(&dict)?;
 
         Ok(Torrent::new(
             announce,
             announce_list,
+            comment,
+            created_by,
+            creation_date,
             name,
             length,
             piece_length,
@@ -159,8 +209,11 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Tracker
     Ok(trackers)
 }
 
-fn compute_info_hash(info_parsed: &Object) -> [u8; 20] {
-    Sha1::digest(&info_parsed.bytes()).into()
+fn compute_info_hash(dict: &BTreeMap<Vec<u8>, Object>) -> Result<[u8; 20], ExtractError> {
+    let info_parsed = dict
+        .get(b"info".as_slice())
+        .ok_or(ExtractError::MissingKey("info".into()))?;
+    Ok(Sha1::digest(&info_parsed.bytes()).into())
 }
 
 fn extract_pieces(info_dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<[u8; 20]>, ExtractError> {

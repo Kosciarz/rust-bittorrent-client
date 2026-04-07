@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error};
+use std::collections::BTreeMap;
 
 use crate::torrent::Torrent;
 
@@ -32,12 +32,101 @@ impl Object {
     }
 }
 
-impl TryFrom<&Torrent> for Object {
-    type Error = Box<dyn Error>;
+impl From<&Torrent> for Object {
+    fn from(torrent: &Torrent) -> Self {
+        let mut dict = BTreeMap::new();
 
-    fn try_from(torrent: &Torrent) -> std::result::Result<Self, Self::Error> {
-        todo!()
+        dict.insert(
+            b"announce".to_vec(),
+            Object::new(
+                ObjectType::ByteArray(torrent.announce().address().as_bytes().to_vec()),
+                Vec::new(),
+            ),
+        );
+        dict.insert(
+            b"announce-list".to_vec(),
+            Object::new(convert_announce_list(torrent), Vec::new()),
+        );
+        dict.insert(
+            b"comment".to_vec(),
+            Object::new(
+                ObjectType::ByteArray(torrent.comment().as_bytes().to_vec()),
+                Vec::new(),
+            ),
+        );
+        dict.insert(
+            b"created by".to_vec(),
+            Object::new(
+                ObjectType::ByteArray(torrent.created_by().as_bytes().to_vec()),
+                Vec::new(),
+            ),
+        );
+        dict.insert(
+            b"creation date".to_vec(),
+            Object::new(
+                ObjectType::Number(torrent.creation_date() as i64),
+                Vec::new(),
+            ),
+        );
+        dict.insert(
+            b"info".to_vec(),
+            Object::new(convert_info_dictionary(torrent), Vec::new()),
+        );
+
+        Object::new(ObjectType::Dictionary(dict), Vec::new())
     }
+}
+
+fn convert_announce_list(torrent: &Torrent) -> ObjectType {
+    let mut announce_list = Vec::new();
+
+    for tracker in torrent.announce_list() {
+        announce_list.push(Object::new(
+            ObjectType::List(vec![Object::new(
+                ObjectType::ByteArray(tracker.address().as_bytes().to_vec()),
+                Vec::new(),
+            )]),
+            Vec::new(),
+        ))
+    }
+
+    ObjectType::List(announce_list)
+}
+
+fn convert_info_dictionary(torrent: &Torrent) -> ObjectType {
+    let mut dict = BTreeMap::new();
+
+    dict.insert(
+        b"length".to_vec(),
+        Object::new(ObjectType::Number(torrent.length() as i64), Vec::new()),
+    );
+    dict.insert(
+        b"name".to_vec(),
+        Object::new(
+            ObjectType::ByteArray(torrent.name().as_bytes().to_vec()),
+            Vec::new(),
+        ),
+    );
+
+    dict.insert(
+        b"piece length".to_vec(),
+        Object::new(
+            ObjectType::Number(torrent.piece_length() as i64),
+            Vec::new(),
+        ),
+    );
+
+    let mut pieces: Vec<u8> = Vec::with_capacity(torrent.pieces().len() * 20);
+    for piece in torrent.pieces() {
+        pieces.extend_from_slice(piece);
+    }
+
+    dict.insert(
+        b"pieces".to_vec(),
+        Object::new(ObjectType::ByteArray(pieces), Vec::new()),
+    );
+
+    ObjectType::Dictionary(dict)
 }
 
 #[derive(Debug)]
