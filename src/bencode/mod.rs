@@ -5,4 +5,4 @@ pub mod object;
 
 pub use decode::decode_object;
 pub use encode::encode_object;
-pub use object::{Object, extract_dict, extract_num, extract_pieces, extract_str};
+pub use object::{ExtractError, Object, ObjectType};
