@@ -17,7 +17,7 @@ pub struct Tracker {
 #[derive(Debug)]
 pub struct AnnounceInfo<'a> {
     info_hash: &'a [u8],
-    peer_id: &'a str,
+    client_id: &'a [u8; 20],
     peer_port: u16,
     downloaded: u64,
     left: u64,
@@ -27,7 +27,7 @@ pub struct AnnounceInfo<'a> {
 impl<'a> AnnounceInfo<'a> {
     pub fn new(
         info_hash: &'a [u8],
-        peer_id: &'a str,
+        client_id: &'a [u8; 20],
         peer_port: u16,
         downloaded: u64,
         left: u64,
@@ -35,7 +35,7 @@ impl<'a> AnnounceInfo<'a> {
     ) -> Self {
         Self {
             info_hash,
-            peer_id,
+            client_id,
             peer_port,
             downloaded,
             left,
@@ -79,12 +79,13 @@ impl Tracker {
 
     pub fn announce(&mut self, announce_info: &AnnounceInfo) -> Result<(), Box<dyn Error>> {
         let url_encoded_info_hash = urlencoding::encode_binary(announce_info.info_hash);
+        let url_encoded_client_id = urlencoding::encode_binary(announce_info.client_id);
 
         let url = format!(
             "{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1",
             self.url,
             url_encoded_info_hash,
-            announce_info.peer_id,
+            url_encoded_client_id,
             announce_info.peer_port,
             announce_info.uploaded,
             announce_info.downloaded,
@@ -109,7 +110,10 @@ impl Tracker {
         self.peers.push(peer);
 
         for peer in &mut self.peers {
-            peer.connect()?;
+            peer.connect(
+                announce_info.info_hash,
+                announce_info.client_id,
+            )?;
         }
 
         Ok(())

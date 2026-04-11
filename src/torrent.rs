@@ -103,12 +103,12 @@ impl Torrent {
     }
 
     pub fn update_trackers(&mut self) -> Result<(), Box<dyn Error>> {
-        let peer_id = random_digit_string(20);
+        let client_id = generate_client_id();
         let peer_port = 12345;
 
         self.announce.announce(&AnnounceInfo::new(
             &self.info_hash,
-            &peer_id,
+            &client_id,
             peer_port,
             self.downloaded,
             self.left,
@@ -233,14 +233,8 @@ fn chunk_array<const N: usize>(data: &[u8]) -> Result<Vec<[u8; N]>, ExtractError
     Ok(result)
 }
 
-fn random_digit_string(len: usize) -> String {
-    static CHARSET: &[u8] = b"0123456789";
-    let mut rng = rand::rng();
-
-    (0..len)
-        .map(|_| {
-            let idx = rng.random_range(0..CHARSET.len());
-            CHARSET[idx] as char
-        })
-        .collect()
+fn generate_client_id() -> [u8; 20] {
+    let mut id = [0u8; 20];
+    rand::rng().fill(&mut id);
+    id
 }
