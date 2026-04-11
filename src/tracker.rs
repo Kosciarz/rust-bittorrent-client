@@ -1,12 +1,12 @@
-use std::{
-    error::Error,
-    time::Duration,
-};
+use std::{error::Error, time::Duration};
 
-use crate::{bencode::{
-    ObjectType, decode_object,
-    object::{extract_byte_array, extract_num},
-}, peer::Peer};
+use crate::{
+    bencode::{
+        ObjectType, decode_object,
+        object::{extract_byte_array, extract_num},
+    },
+    peer::Peer,
+};
 
 pub struct Tracker {
     url: String,
@@ -44,6 +44,14 @@ impl<'a> AnnounceInfo<'a> {
     }
 }
 
+#[derive(Debug)]
+pub struct AnnounceResult {
+    complete: i64,
+    incomplete: i64,
+    interval: i64,
+    peers: Vec<u8>,
+}
+
 impl Tracker {
     pub fn new(url: String) -> Self {
         Self {
@@ -69,7 +77,7 @@ impl Tracker {
         &self.peers
     }
 
-    pub fn update(&mut self, announce_info: &AnnounceInfo) -> Result<(), Box<dyn Error>> {
+    pub fn announce(&mut self, announce_info: &AnnounceInfo) -> Result<(), Box<dyn Error>> {
         let url_encoded_info_hash = urlencoding::encode_binary(announce_info.info_hash);
 
         let url = format!(
@@ -83,29 +91,50 @@ impl Tracker {
             announce_info.left,
         );
 
-        let res = reqwest::blocking::get(url)?.bytes()?;
-        let object = decode_object(&res);
+        let announce_result = self.send_announce_request(&url)?;
 
-        match object.object_type() {
+        println!(
+            "Complete: {}\nIncomplete: {}\nInterval: {}\nPeers: {:?}",
+            announce_result.complete,
+            announce_result.incomplete,
+            announce_result.interval,
+            announce_result.peers
+        );
+
+        self.set_interval(Duration::from_secs(u64::try_from(
+            announce_result.interval,
+        )?));
+
+        let peer = Peer::from_bytes(&announce_result.peers);
+        self.peers.push(peer);
+
+        for peer in &mut self.peers {
+            peer.connect()?;
+        }
+
+        Ok(())
+    }
+
+    fn send_announce_request(&self, url: &str) -> Result<AnnounceResult, Box<dyn Error>> {
+        let res = reqwest::blocking::get(url)?.bytes()?;
+        let obj = decode_object(&res);
+
+        match obj.object_type() {
             ObjectType::Dictionary(d) => {
                 let complete = extract_num(&d, b"complete")?;
                 let incomplete = extract_num(&d, b"incomplete")?;
                 let interval = extract_num(&d, b"interval")?;
-                self.set_interval(Duration::from_secs(interval as u64));
-
                 let peers = extract_byte_array(&d, b"peers")?;
 
-                let peer = Peer::new_from_bytes(&peers);
-
-                println!(
-                    "Complete: {}\nIncomplete: {}\nInterval: {}\nPeer: {:?}",
-                    complete, incomplete, interval, peer
-                );
+                Ok(AnnounceResult {
+                    complete,
+                    incomplete,
+                    interval,
+                    peers,
+                })
             }
-            _ => panic!("Expected a dictionary"),
+            _ => Err("Expected a dictionary".into()),
         }
-
-        Ok(())
     }
 }
 

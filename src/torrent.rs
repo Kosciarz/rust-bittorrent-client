@@ -106,7 +106,7 @@ impl Torrent {
         let peer_id = random_digit_string(20);
         let peer_port = 12345;
 
-        self.announce.update(&AnnounceInfo::new(
+        self.announce.announce(&AnnounceInfo::new(
             &self.info_hash,
             &peer_id,
             peer_port,
