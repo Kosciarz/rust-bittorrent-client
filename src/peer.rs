@@ -1,8 +1,10 @@
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream},
     time::Duration,
 };
+
+const HANDSHAKE_SIZE: usize = 68;
 
 #[derive(Debug)]
 pub struct Peer {
@@ -37,6 +39,8 @@ impl Peer {
 
         connection.send_handshake(info_hash, client_id)?;
 
+        connection.read_handshake(info_hash)?;
+
         Ok(())
     }
 }
@@ -60,7 +64,7 @@ impl PeerConnection {
     }
 
     fn encode_handshake(info_hash: &[u8], client_id: &[u8]) -> Vec<u8> {
-        let mut handshake = Vec::with_capacity(68);
+        let mut handshake = Vec::with_capacity(HANDSHAKE_SIZE);
 
         handshake.push(19);
         handshake.extend_from_slice(b"BitTorrent protocol");
@@ -79,7 +83,36 @@ impl PeerConnection {
         self.send_bytes(&Self::encode_handshake(info_hash, client_id))?;
         self.handshake_sent = true;
 
-        println!("-> handshake");
+        Ok(())
+    }
+
+    fn read_handshake(&mut self, info_hash: &[u8]) -> io::Result<()> {
+        let mut buffer = [0u8; HANDSHAKE_SIZE];
+
+        self.stream.read(&mut buffer)?;
+
+        let pstrlen = buffer[0];
+        assert_eq!(pstrlen, 19);
+
+        let mut pstr = Vec::new();
+        pstr.extend_from_slice(&buffer[1..20]);
+        assert_eq!(pstr, b"BitTorrent protocol");
+
+        let mut reserved = Vec::new();
+        reserved.extend_from_slice(&buffer[20..28]);
+        assert_eq!(reserved, [0u8; 8]);
+
+        let mut handshake_info_hash = Vec::new();
+        handshake_info_hash.extend_from_slice(&buffer[28..48]);
+        assert_eq!(handshake_info_hash, info_hash);
+
+        let mut peer_id = Vec::new();
+        peer_id.extend_from_slice(&buffer[48..68]);
+
+        println!(
+            "\npstrlen: {}\npstr: {}\nreserved: {:?}\ninfo_hash: {:?}\npeer_id: {:?}",
+            pstrlen, String::from_utf8(pstr).unwrap(), reserved, handshake_info_hash, peer_id
+        );
 
         Ok(())
     }

@@ -110,10 +110,7 @@ impl Tracker {
         self.peers.push(peer);
 
         for peer in &mut self.peers {
-            peer.connect(
-                announce_info.info_hash,
-                announce_info.client_id,
-            )?;
+            peer.connect(announce_info.info_hash, announce_info.client_id)?;
         }
 
         Ok(())
@@ -122,6 +119,8 @@ impl Tracker {
     fn send_announce_request(&self, url: &str) -> Result<AnnounceResult, Box<dyn Error>> {
         let res = reqwest::blocking::get(url)?.bytes()?;
         let obj = decode_object(&res);
+
+        println!("Announce result: {:?}", &res);
 
         match obj.object_type() {
             ObjectType::Dictionary(d) => {
