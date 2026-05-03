@@ -1,7 +1,6 @@
 use std::{collections::BTreeMap, fs, io, path::Path};
 
 use anyhow::{Context, Result, anyhow};
-use rand::RngExt;
 use sha1::{Digest, Sha1};
 use url::Url;
 
@@ -10,6 +9,7 @@ use crate::{
         self, ExtractError, Object, ObjectType, decode_object,
         object::{extract_byte_array, extract_dict, extract_list, extract_num, extract_str},
     },
+    client::Client,
     peer::Peer,
     tracker::{AnnounceStats, Tracker},
 };
@@ -107,16 +107,13 @@ impl Torrent {
         Ok(())
     }
 
-    pub async fn update_trackers(&mut self) -> Result<()> {
-        let peer_id = generate_client_id();
-        let port = 12345;
-
+    pub async fn update_trackers(&mut self, client: &Client) -> Result<()> {
         let addrs = self
             .tracker
             .announce(
                 &self.info_hash,
-                &peer_id,
-                port,
+                &client.peer_id,
+                client.port,
                 &AnnounceStats {
                     uploaded: self.uploaded,
                     downloaded: self.downloaded,
@@ -126,12 +123,18 @@ impl Torrent {
             .await?;
 
         for addr in addrs {
-            self.peers.push(Peer::new(addr));
+            if !self.peers.iter().any(|p| p.addr() == addr) {
+                self.peers.push(Peer::new(addr));
+            }
         }
 
+        Ok(())
+    }
+
+    pub fn connect_peers(&mut self, client: &Client) -> Result<()> {
         for peer in &mut self.peers {
             println!("\nTrying peer {}", peer.addr());
-            match peer.connect(&self.info_hash, &peer_id) {
+            match peer.connect(&self.info_hash, &client.peer_id) {
                 Ok(_) => break,
                 Err(e) => println!("Peer {} failed: {e}", peer.addr()),
             }
@@ -252,10 +255,4 @@ fn chunk_array<const N: usize>(data: &[u8]) -> Result<Vec<[u8; N]>, ExtractError
     }
 
     Ok(result)
-}
-
-fn generate_client_id() -> [u8; 20] {
-    let mut id = [0u8; 20];
-    rand::rng().fill(&mut id);
-    id
 }

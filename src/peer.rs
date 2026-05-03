@@ -112,15 +112,6 @@ impl PeerConnection {
         let mut peer_id = Vec::new();
         peer_id.extend_from_slice(&buffer[48..68]);
 
-        println!(
-            "\npstrlen: {}\npstr: {}\nreserved: {:?}\ninfo_hash: {:?}\npeer_id: {:?}",
-            buffer[0],
-            String::from_utf8(buffer[1..20].to_vec()).unwrap(),
-            reserved,
-            &buffer[28..48],
-            peer_id
-        );
-
         Ok(())
     }
 
