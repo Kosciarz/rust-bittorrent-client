@@ -6,7 +6,7 @@ use url::Url;
 
 use crate::{
     bencode::{
-        self, ExtractError, Object, ObjectType, decode_object,
+        self, Object, ObjectType, decode_object,
         object::{extract_byte_array, extract_dict, extract_list, extract_num, extract_str},
     },
     client::Client,
@@ -212,7 +212,11 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tra
         let list = match tier.object_type() {
             ObjectType::List(l) => l,
             _ => {
-                return Err(ExtractError::InvalidKey("announce-list".into(), "list".into()).into());
+                return Err(anyhow!(
+                    "Expected key {} to be of type {}",
+                    "announce-list",
+                    "list"
+                ));
             }
         };
 
@@ -220,16 +224,16 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tra
             let bytes = match obj.object_type() {
                 ObjectType::ByteArray(b) => b,
                 _ => {
-                    return Err(ExtractError::InvalidKey(
-                        "announce-list".into(),
-                        "byte string".into(),
+                    return Err(anyhow!(
+                        "Expected key {} to be {}",
+                        "announce-list",
+                        "byte string",
                     )
                     .into());
                 }
             };
 
-            let url =
-                String::from_utf8(bytes.to_vec()).map_err(|err| ExtractError::InvalidUtf8(err))?;
+            let url = String::from_utf8(bytes.to_vec())?;
 
             trackers.push(Tracker::new(Url::parse(&url)?));
         }
@@ -240,21 +244,21 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tra
     Ok(announce_list)
 }
 
-fn compute_info_hash(dict: &BTreeMap<Vec<u8>, Object>) -> Result<[u8; 20], ExtractError> {
+fn compute_info_hash(dict: &BTreeMap<Vec<u8>, Object>) -> Result<[u8; 20]> {
     let info_parsed = dict
         .get(b"info".as_slice())
-        .ok_or(ExtractError::MissingKey("info".into()))?;
+        .ok_or(anyhow!("Missing key info"))?;
     Ok(Sha1::digest(&info_parsed.bytes()).into())
 }
 
-fn extract_pieces(info_dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<[u8; 20]>, ExtractError> {
+fn extract_pieces(info_dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<[u8; 20]>> {
     let arr = extract_byte_array(info_dict, b"pieces")?;
     chunk_array::<20>(&arr)
 }
 
-fn chunk_array<const N: usize>(data: &[u8]) -> Result<Vec<[u8; N]>, ExtractError> {
+fn chunk_array<const N: usize>(data: &[u8]) -> Result<Vec<[u8; N]>> {
     if data.len() % N != 0 {
-        return Err(ExtractError::InvalidPiecesLength(data.len(), N));
+        return Err(anyhow!("Length {} is not a mupliple of {}", data.len(), N));
     }
 
     let mut result = Vec::with_capacity(data.len() / N);

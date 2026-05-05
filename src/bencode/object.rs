@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::torrent::Torrent;
 
-type Result<T> = std::result::Result<T, ExtractError>;
+use anyhow::{Result, anyhow};
 
 #[derive(Debug)]
 pub enum ObjectType {
@@ -132,42 +132,10 @@ fn convert_info_dictionary(torrent: &Torrent) -> ObjectType {
     ObjectType::Dictionary(dict)
 }
 
-#[derive(Debug)]
-pub enum ExtractError {
-    MissingKey(String),
-    InvalidKey(String, String),
-    InvalidUtf8(std::string::FromUtf8Error),
-    InvalidPiecesLength(usize, usize),
-}
-
-impl std::fmt::Display for ExtractError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self {
-            ExtractError::MissingKey(key) => write!(f, "Missing key '{}'", key),
-            ExtractError::InvalidKey(key, key_type) => {
-                write!(f, "Key '{}' is not a {}", key, key_type)
-            }
-            ExtractError::InvalidUtf8(err) => write!(f, "{}", err),
-            ExtractError::InvalidPiecesLength(length, multiple) => write!(
-                f,
-                "Input length ({}) is not a multiple of {}",
-                length, multiple
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ExtractError {}
-
-impl From<std::string::FromUtf8Error> for ExtractError {
-    fn from(err: std::string::FromUtf8Error) -> ExtractError {
-        ExtractError::InvalidUtf8(err)
-    }
-}
-
 fn get_value<'a>(dict: &'a BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Result<&'a Object> {
-    dict.get(key).ok_or(ExtractError::MissingKey(
-        String::from_utf8_lossy(key).to_string(),
+    dict.get(key).ok_or(anyhow!(
+        "Missing key {}",
+        String::from_utf8_lossy(key).to_string()
     ))
 }
 
@@ -176,9 +144,10 @@ pub fn extract_num(dict: &BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Result<i64> 
 
     match value.object_type() {
         ObjectType::Number(num) => Ok(*num),
-        _ => Err(ExtractError::InvalidKey(
+        _ => Err(anyhow!(
+            "Expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
-            "number".into(),
+            "number",
         )),
     }
 }
@@ -188,15 +157,16 @@ pub fn extract_byte_array(dict: &BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Resul
 
     match value.object_type() {
         ObjectType::ByteArray(b) => Ok(b.to_vec()),
-        _ => Err(ExtractError::InvalidKey(
+        _ => Err(anyhow!(
+            "Expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
-            "byte array".into(),
+            "byte array",
         )),
     }
 }
 
 pub fn extract_str(dict: &BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Result<String> {
-    String::from_utf8(extract_byte_array(dict, key)?).map_err(|err| ExtractError::InvalidUtf8(err))
+    Ok(String::from_utf8(extract_byte_array(dict, key)?)?)
 }
 
 pub fn extract_list<'a>(
@@ -207,9 +177,10 @@ pub fn extract_list<'a>(
 
     match value.object_type() {
         ObjectType::List(l) => Ok(l),
-        _ => Err(ExtractError::InvalidKey(
+        _ => Err(anyhow!(
+            "Expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
-            "list".into(),
+            "list",
         )),
     }
 }
@@ -222,9 +193,10 @@ pub fn extract_dict<'a>(
 
     match value.object_type() {
         ObjectType::Dictionary(d) => Ok(d),
-        _ => Err(ExtractError::InvalidKey(
+        _ => Err(anyhow!(
+            "Expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
-            "dictionary".into(),
+            "dictionary",
         )),
     }
 }
