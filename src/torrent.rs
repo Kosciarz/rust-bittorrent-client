@@ -7,11 +7,17 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
 use sha1::{Digest, Sha1};
-use tokio::{fs::File, io::{AsyncSeekExt, AsyncWriteExt}, sync::Mutex, task::JoinSet};
+use tokio::{
+    fs::File,
+    io::{AsyncSeekExt, AsyncWriteExt},
+    sync::Mutex,
+    task::JoinSet,
+};
 use url::Url;
 
 use crate::{
@@ -50,8 +56,8 @@ pub struct Torrent {
 
     // metadata (only for serialization/display)
     name: String,
-    tracker: Tracker,
-    announce_list: Vec<Vec<Tracker>>,
+    tracker: Arc<Tracker>,
+    announce_list: Vec<Vec<Arc<Tracker>>>,
     comment: String,
     created_by: String,
     creation_date: u64,
@@ -70,7 +76,7 @@ impl Torrent {
         &self.tracker
     }
 
-    pub fn announce_list(&self) -> &Vec<Vec<Tracker>> {
+    pub fn announce_list(&self) -> &Vec<Vec<Arc<Tracker>>> {
         &self.announce_list
     }
 
@@ -106,6 +112,14 @@ impl Torrent {
         &self.piece_hashes
     }
 
+    pub async fn is_completed(&self) -> bool {
+        self.pieces
+            .lock()
+            .await
+            .iter()
+            .all(|p| p.state == PieceState::Done)
+    }
+
     pub async fn load_from_file(path: &Path) -> Result<Torrent> {
         let bytes = fs::read(path)?;
         let obj = decode_object(&bytes);
@@ -127,7 +141,7 @@ impl Torrent {
         Ok(())
     }
 
-    pub async fn update_trackers(&mut self, client: &Client) -> Result<()> {
+    pub async fn update_trackers(&self, client: &Client) -> Result<()> {
         let addrs = self
             .tracker
             .announce(
@@ -157,15 +171,13 @@ impl Torrent {
     }
 
     pub async fn download(&self, client: &Client) -> Result<()> {
-        let peers: Vec<Peer> = self.peers.lock().await.drain(..).collect();
-
         let info_hash = self.info_hash;
         let peer_id = client.peer_id;
         let num_pieces = self.piece_hashes.len();
 
         let mut set = JoinSet::new();
 
-        for peer in peers {
+        for peer in self.drain_available_peers().await {
             println!("\nTrying peer {}", peer.addr());
             let mut torrent = self.clone();
 
@@ -181,7 +193,7 @@ impl Torrent {
                             }
                         };
 
-                    if let Err(e) = conn.receive_initial_messages().await {
+                    if let Err(e) = conn.wait_until_ready().await {
                         eprintln!("Failed to receive initial messages: {e}");
                         return;
                     }
@@ -202,9 +214,18 @@ impl Torrent {
             });
         }
 
-        while let Some(_) = set.join_next().await {}
+        while let Some(_) = set.join_next().await {
+            if self.is_completed().await {
+                set.abort_all();
+                return Ok(());
+            }
+        }
 
         Ok(())
+    }
+
+    async fn drain_available_peers(&self) -> Vec<Peer> {
+        self.peers.lock().await.drain(..).collect()
     }
 
     async fn download_from(&mut self, conn: &mut PeerConnection) -> Result<()> {
@@ -213,8 +234,31 @@ impl Torrent {
                 break;
             };
 
-            let data = conn.download_piece(piece_idx, self.piece_length).await?;
-            self.verify_and_store(piece_idx, &data).await?;
+            let piece_len = {
+                let pieces = self.pieces.lock().await;
+                pieces[piece_idx].length as u64
+            };
+
+            let data = match tokio::time::timeout(
+                Duration::from_mins(3),
+                conn.download_piece(piece_idx, piece_len),
+            )
+            .await
+            {
+                Ok(Ok(d)) => d,
+                Ok(Err(e)) => {
+                    let mut pieces = self.pieces.lock().await;
+                    pieces[piece_idx].state = PieceState::Missing;
+                    return Err(e);
+                }
+                Err(_) => {
+                    let mut pieces = self.pieces.lock().await;
+                    pieces[piece_idx].state = PieceState::Missing;
+                    return Err(anyhow!("Download timed out"));
+                }
+            };
+
+            self.verify_and_store_piece(piece_idx, &data).await?;
         }
 
         Ok(())
@@ -229,7 +273,7 @@ impl Torrent {
         Some(idx)
     }
 
-    async fn verify_and_store(&self, piece_idx: usize, data: &[u8]) -> Result<()> {
+    async fn verify_and_store_piece(&self, piece_idx: usize, data: &[u8]) -> Result<()> {
         let piece_hash: [u8; 20] = Sha1::digest(data).into();
         {
             let mut pieces = self.pieces.lock().await;
@@ -239,28 +283,25 @@ impl Torrent {
             }
         }
 
-        self.downloaded
-            .fetch_add(data.len() as u64, Ordering::Relaxed);
-        self.left.fetch_sub(data.len() as u64, Ordering::Relaxed);
-
         {
             let mut file = self.file.lock().await;
-            file.seek(io::SeekFrom::Current(piece_idx as i64 * self.piece_length as i64)).await?;
+            file.seek(io::SeekFrom::Start(piece_idx as u64 * self.piece_length))
+                .await?;
             file.write_all(data).await?;
             file.flush().await?;
         }
 
-        {
-            let mut pieces = self.pieces.lock().await;
-            pieces[piece_idx].state = PieceState::Done;
-        }
+        self.downloaded
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
+        self.left.fetch_sub(data.len() as u64, Ordering::Relaxed);
 
-        println!("Verified piece {}", piece_idx);
+        let mut pieces = self.pieces.lock().await;
+        pieces[piece_idx].state = PieceState::Done;
+
+        println!("Downloaded piece {}", piece_idx);
         Ok(())
     }
-}
 
-impl Torrent {
     async fn from_object(object: Object) -> Result<Self> {
         let dict = match object.object_type() {
             ObjectType::Dictionary(d) => d,
@@ -304,7 +345,12 @@ impl Torrent {
             });
         }
 
-        let file = File::options().create(true).write(true).open(&name).await?;
+        let file = File::options()
+            .create(true)
+            .write(true)
+            .read(true)
+            .open(&name)
+            .await?;
         file.set_len(total_length).await?;
 
         let info_hash = compute_info_hash(&dict)?;
@@ -315,7 +361,7 @@ impl Torrent {
             piece_length,
             length: total_length,
             name,
-            tracker: announce,
+            tracker: Arc::new(announce),
             announce_list,
             comment,
             created_by,
@@ -330,7 +376,7 @@ impl Torrent {
     }
 }
 
-fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tracker>>> {
+fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Arc<Tracker>>>> {
     let tiers = extract_list(dict, b"announce-list")?;
 
     let mut announce_list = Vec::new();
@@ -364,7 +410,7 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tra
 
             let url = String::from_utf8(bytes.to_vec())?;
 
-            trackers.push(Tracker::new(Url::parse(&url)?));
+            trackers.push(Arc::new(Tracker::new(Url::parse(&url)?)));
         }
 
         announce_list.push(trackers);

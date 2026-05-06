@@ -1,5 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -18,19 +19,19 @@ pub struct AnnounceStats {
     pub left: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Tracker {
     url: Url,
-    interval: Duration,
-    last_announce: Option<Instant>,
+    interval: Mutex<Duration>,
+    last_announce: Mutex<Option<Instant>>,
 }
 
 impl Tracker {
     pub fn new(url: Url) -> Self {
         Self {
             url,
-            interval: Duration::from_secs(1800),
-            last_announce: None,
+            interval: Mutex::new(Duration::from_secs(1800)),
+            last_announce: Mutex::new(None),
         }
     }
 
@@ -38,12 +39,21 @@ impl Tracker {
         &self.url
     }
 
-    pub fn interval(&self) -> &Duration {
-        &self.interval
+    pub fn interval(&self) -> Duration {
+        *self.interval.lock().unwrap()
+    }
+
+    pub fn is_due(&self) -> bool {
+        let last_announce = self.last_announce.lock().unwrap();
+        let interval = self.interval.lock().unwrap();
+        match *last_announce {
+            Some(l) => l + *interval <= Instant::now(),
+            None => true,
+        }
     }
 
     pub async fn announce(
-        &mut self,
+        &self,
         info_hash: &[u8; 20],
         peer_id: &[u8; 20],
         port: u16,
@@ -58,8 +68,9 @@ impl Tracker {
             _ => return Err(anyhow!("Expected a dictionary")),
         };
 
-        self.interval = Duration::from_secs(extract_num(&dict, b"interval")? as u64);
-        self.last_announce = Some(Instant::now());
+        *self.interval.lock().unwrap() =
+            Duration::from_secs(extract_num(&dict, b"interval")? as u64);
+        *self.last_announce.lock().unwrap() = Some(Instant::now());
 
         let peers_bytes = extract_byte_array(&dict, b"peers")?;
 
