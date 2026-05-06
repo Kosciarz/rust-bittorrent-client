@@ -27,7 +27,7 @@ impl Client {
         let path = args[1].to_string();
         let path = Path::new(&path);
 
-        let mut torrent = Torrent::load_from_file(path)?;
+        let mut torrent = Torrent::load_from_file(path).await?;
         torrent.update_trackers(self).await?;
         torrent.download(self).await?;
 

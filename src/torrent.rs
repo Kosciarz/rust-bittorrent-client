@@ -11,7 +11,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use sha1::{Digest, Sha1};
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::{fs::File, io::{AsyncSeekExt, AsyncWriteExt}, sync::Mutex, task::JoinSet};
 use url::Url;
 
 use crate::{
@@ -30,7 +30,7 @@ pub const BLOCK_SIZE: u32 = 16_384;
 enum PieceState {
     Missing,
     InProgress,
-    Verified,
+    Done,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +62,7 @@ pub struct Torrent {
     uploaded: Arc<AtomicU64>,
     pieces: Arc<Mutex<Vec<Piece>>>,
     peers: Arc<Mutex<Vec<Peer>>>,
+    file: Arc<Mutex<File>>,
 }
 
 impl Torrent {
@@ -105,23 +106,24 @@ impl Torrent {
         &self.piece_hashes
     }
 
-    pub fn load_from_file(path: &Path) -> Result<Torrent> {
+    pub async fn load_from_file(path: &Path) -> Result<Torrent> {
         let bytes = fs::read(path)?;
         let obj = decode_object(&bytes);
-        Torrent::try_from(obj)
+        Torrent::from_object(obj).await
     }
 
-    pub fn save_to_file(&self, path: &Path) -> io::Result<()> {
+    pub async fn save_to_file(&self, path: &Path) -> io::Result<()> {
         let obj = Object::from_torrent(self);
         let bytes = bencode::encode_object(&obj);
-        fs::write(
+        tokio::fs::write(
             format!(
                 "{}/{}.torrent",
                 path.to_string_lossy().to_string(),
                 self.name
             ),
             bytes,
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -235,23 +237,31 @@ impl Torrent {
                 pieces[piece_idx].state = PieceState::Missing;
                 return Err(anyhow!("Piece {} hash mismatch", piece_idx));
             }
-
-            pieces[piece_idx].state = PieceState::Verified;
         }
 
         self.downloaded
             .fetch_add(data.len() as u64, Ordering::Relaxed);
         self.left.fetch_sub(data.len() as u64, Ordering::Relaxed);
 
+        {
+            let mut file = self.file.lock().await;
+            file.seek(io::SeekFrom::Current(piece_idx as i64 * self.piece_length as i64)).await?;
+            file.write_all(data).await?;
+            file.flush().await?;
+        }
+
+        {
+            let mut pieces = self.pieces.lock().await;
+            pieces[piece_idx].state = PieceState::Done;
+        }
+
         println!("Verified piece {}", piece_idx);
         Ok(())
     }
 }
 
-impl TryFrom<Object> for Torrent {
-    type Error = anyhow::Error;
-
-    fn try_from(object: Object) -> Result<Self> {
+impl Torrent {
+    async fn from_object(object: Object) -> Result<Self> {
         let dict = match object.object_type() {
             ObjectType::Dictionary(d) => d,
             _ => return Err(anyhow!("Top level object is not a dictionary")),
@@ -294,6 +304,9 @@ impl TryFrom<Object> for Torrent {
             });
         }
 
+        let file = File::options().create(true).write(true).open(&name).await?;
+        file.set_len(total_length).await?;
+
         let info_hash = compute_info_hash(&dict)?;
 
         Ok(Torrent {
@@ -312,6 +325,7 @@ impl TryFrom<Object> for Torrent {
             uploaded: Arc::new(0.into()),
             pieces: Arc::new(Mutex::new(pieces)),
             peers: Arc::new(Mutex::new(Vec::new())),
+            file: Arc::new(Mutex::new(file)),
         })
     }
 }
@@ -360,10 +374,10 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Tra
 }
 
 fn compute_info_hash(dict: &BTreeMap<Vec<u8>, Object>) -> Result<[u8; 20]> {
-    let info_parsed = dict
+    let info = dict
         .get(b"info".as_slice())
         .ok_or(anyhow!("Missing key info"))?;
-    Ok(Sha1::digest(&info_parsed.bytes()).into())
+    Ok(Sha1::digest(&info.bytes()).into())
 }
 
 fn extract_pieces(info_dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<[u8; 20]>> {
