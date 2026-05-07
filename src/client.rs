@@ -21,7 +21,7 @@ impl Client {
     pub async fn run(&self) -> Result<()> {
         let args: Vec<_> = env::args().collect();
         if args.len() < 2 {
-            panic!("Invalid argument count");
+            panic!("invalid argument count");
         }
 
         let path = args[1].to_string();
@@ -30,11 +30,7 @@ impl Client {
         let torrent = Torrent::load_from_file(path).await?;
         torrent.download(self).await?;
 
-        if !torrent.is_completed().await {
-            return Err(anyhow!("Failed to download"));
-        }
-
-        println!("Download completed");
+        println!("download completed");
         Ok(())
     }
 }

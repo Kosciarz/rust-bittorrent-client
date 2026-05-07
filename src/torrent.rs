@@ -9,14 +9,14 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use sha1::{Digest, Sha1};
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
     sync::{
         Mutex,
-        mpsc::{self},
+        mpsc::{self, Sender},
     },
     task::JoinSet,
 };
@@ -145,112 +145,126 @@ impl Torrent {
     }
 
     pub async fn download(&self, client: &Client) -> Result<()> {
-        let (peer_tx, mut peer_rx) = mpsc::channel::<Vec<Peer>>(1);
+        let (peer_tx, peer_rx) = mpsc::channel::<Vec<Peer>>(1);
 
         let announce_task = tokio::spawn({
             let torrent = self.clone();
             let client = client.clone();
 
-            async move {
-                let mut addr_set = HashSet::new();
-
-                loop {
-                    if torrent.tracker.is_due() {
-                        let addrs = torrent
-                            .tracker
-                            .announce(
-                                &torrent.info_hash,
-                                &client.peer_id,
-                                client.port,
-                                &AnnounceStats {
-                                    uploaded: torrent.uploaded.load(Ordering::Relaxed),
-                                    downloaded: torrent.downloaded.load(Ordering::Relaxed),
-                                    left: torrent.left.load(Ordering::Relaxed),
-                                },
-                            )
-                            .await?;
-
-                        let mut peers = Vec::new();
-                        for addr in addrs {
-                            if addr_set.insert(addr) {
-                                peers.push(Peer::new(addr));
-                            }
-                        }
-
-                        if !peers.is_empty() {
-                            peer_tx.send(peers).await?;
-                        }
-                    }
-
-                    tokio::time::sleep(torrent.tracker.interval()).await;
-                }
-
-                Ok::<(), anyhow::Error>(())
-            }
+            async move { torrent.run_announce_loop(peer_tx, &client).await }
         });
 
         let download_task = tokio::spawn({
             let torrent = self.clone();
             let client = client.clone();
 
-            async move {
-                let mut set = JoinSet::new();
-
-                while let Some(peers) = peer_rx.recv().await {
-                    for peer in peers {
-                        let mut torrent = torrent.clone();
-
-                        set.spawn(async move {
-                            let addr = peer.addr();
-                            let mut conn = match PeerConnection::connect(
-                                peer,
-                                &torrent.info_hash,
-                                &client.peer_id,
-                                torrent.piece_hashes.len(),
-                            )
-                            .await
-                            {
-                                Ok(conn) => conn,
-                                Err(e) => {
-                                    eprintln!("Peer {addr} failed: {e}");
-                                    return;
-                                }
-                            };
-
-                            if let Err(e) = conn.wait_until_ready().await {
-                                eprintln!("Failed to receive initial messages: {e}");
-                                return;
-                            }
-
-                            if let Err(e) = conn.send_interested().await {
-                                eprintln!("Failed to send interested: {e}");
-                                return;
-                            }
-
-                            match torrent.download_from(&mut conn).await {
-                                Ok(_) => return,
-                                Err(e) => {
-                                    eprintln!("Download failed: {e}");
-                                    return;
-                                }
-                            }
-                        });
-                    }
-
-                    while let Some(_) = set.join_next().await {}
-                }
-            }
+            async move { torrent.run_download_loop(peer_rx, &client).await }
         });
 
         let (announce_result, download_result) = tokio::join!(announce_task, download_task);
 
         announce_result??;
-        download_result?;
+        download_result??;
 
         Ok(())
     }
 
-    async fn download_from(&mut self, conn: &mut PeerConnection) -> Result<()> {
+    async fn run_announce_loop(&self, peer_tx: Sender<Vec<Peer>>, client: &Client) -> Result<()> {
+        let mut addr_set = HashSet::new();
+
+        loop {
+            if self.tracker.is_due() {
+                let addrs = self
+                    .tracker
+                    .announce(
+                        &self.info_hash,
+                        &client.peer_id,
+                        client.port,
+                        &AnnounceStats {
+                            uploaded: self.uploaded.load(Ordering::Relaxed),
+                            downloaded: self.downloaded.load(Ordering::Relaxed),
+                            left: self.left.load(Ordering::Relaxed),
+                        },
+                    )
+                    .await?;
+
+                let mut peers = Vec::new();
+                for addr in addrs {
+                    if addr_set.insert(addr) {
+                        peers.push(Peer::new(addr));
+                    }
+                }
+
+                if !peers.is_empty() {
+                    peer_tx.send(peers).await?;
+                }
+            }
+
+            tokio::time::sleep(self.tracker.interval()).await;
+        }
+    }
+
+    fn process_peers(&self, peers: Vec<Peer>, join_set: &mut JoinSet<Result<()>>, client: &Client) {
+        for peer in peers {
+            let torrent = self.clone();
+            let client = client.clone();
+
+            join_set.spawn(async move {
+                let addr = peer.addr();
+                let mut conn = PeerConnection::connect(
+                    peer,
+                    &torrent.info_hash,
+                    &client.peer_id,
+                    torrent.piece_hashes.len(),
+                )
+                .await
+                .context(format!("peer {addr} failed"))?;
+
+                conn.wait_until_ready()
+                    .await
+                    .context("failed to receive initial messages")?;
+                conn.send_interested()
+                    .await
+                    .context("failed to send interested")?;
+
+                torrent
+                    .download_from_peer(&mut conn)
+                    .await
+                    .context("download failed")
+            });
+        }
+    }
+
+    async fn run_download_loop(
+        &self,
+        mut peer_rx: mpsc::Receiver<Vec<Peer>>,
+        client: &Client,
+    ) -> Result<()> {
+        let mut join_set = JoinSet::new();
+
+        loop {
+            tokio::select! {
+                Some(peers) = peer_rx.recv() => {
+                    self.process_peers(peers, &mut join_set, client);
+                }
+                Some(res) = join_set.join_next() => {
+                    match res {
+                        Ok(Ok(())) => {},
+                        Ok(Err(e)) => eprintln!("peer connection failed: {e}"),
+                        Err(e) => eprintln!("peer task panicked: {e}"),
+                    }
+
+                    if self.is_completed().await {
+                        join_set.abort_all();
+                        break Ok(());
+                    }
+                }
+                else => return Err(anyhow!("ran out of peers before download completed")),
+            }
+        }
+    }
+
+    async fn download_from_peer(&self, conn: &mut PeerConnection) -> Result<()> {
         loop {
             let Some(piece_idx) = self.pick_piece(conn.peer().bitfield()).await else {
                 break;
@@ -261,22 +275,19 @@ impl Torrent {
                 pieces[piece_idx].length as u64
             };
 
-            let piece = match tokio::time::timeout(
+            let res = tokio::time::timeout(
                 Duration::from_mins(3),
                 conn.download_piece(piece_idx, piece_len),
             )
             .await
-            {
-                Ok(Ok(p)) => p,
-                Ok(Err(e)) => {
-                    let mut pieces = self.pieces.lock().await;
-                    pieces[piece_idx].state = PieceState::Missing;
+            .context("download timed out")
+            .flatten();
+
+            let piece = match res {
+                Ok(p) => p,
+                Err(e) => {
+                    self.pieces.lock().await[piece_idx].state = PieceState::Missing;
                     return Err(e);
-                }
-                Err(_) => {
-                    let mut pieces = self.pieces.lock().await;
-                    pieces[piece_idx].state = PieceState::Missing;
-                    return Err(anyhow!("Download timed out"));
                 }
             };
 
@@ -288,24 +299,23 @@ impl Torrent {
 
     async fn pick_piece(&self, bitfield: &BitField) -> Option<usize> {
         let mut pieces = self.pieces.lock().await;
-        let idx = (0..pieces.len()).find(|&piece| {
-            bitfield.has_piece(piece) && pieces[piece].state == PieceState::Missing
+        let idx = pieces.iter().enumerate().find_map(|(i, piece)| {
+            (bitfield.has_piece(i) && piece.state == PieceState::Missing).then_some(i)
         })?;
         pieces[idx].state = PieceState::InProgress;
         Some(idx)
     }
 
-    async fn verify_and_store_piece(&self, mut piece: Piece) -> Result<()> {
+    async fn verify_and_store_piece(&self, piece: Piece) -> Result<()> {
         let data = match &piece.state {
             PieceState::Downloaded { data } => data,
             _ => unreachable!("piece must be in Downloaded state here"),
         };
 
         let piece_hash: [u8; 20] = Sha1::digest(&data).into();
-        let mut pieces = self.pieces.lock().await;
         if piece_hash != self.piece_hashes[piece.index] {
-            pieces[piece.index].state = PieceState::Missing;
-            return Err(anyhow!("Piece {} hash mismatch", piece.index));
+            self.pieces.lock().await[piece.index].state = PieceState::Missing;
+            bail!("piece {} hash mismatch", piece.index);
         }
 
         self.downloaded
@@ -314,10 +324,9 @@ impl Torrent {
 
         self.file_tx.send(piece.clone()).await?;
 
-        piece.state = PieceState::Done;
-        pieces[piece.index] = piece.clone();
+        self.pieces.lock().await[piece.index].state = PieceState::Done;
 
-        println!("Downloaded piece {}", piece.index);
+        println!("downloaded piece {}", piece.index);
 
         Ok(())
     }
@@ -325,7 +334,7 @@ impl Torrent {
     async fn from_object(object: Object) -> Result<Self> {
         let dict = match object.object_type() {
             ObjectType::Dictionary(d) => d,
-            _ => return Err(anyhow!("Top level object is not a dictionary")),
+            _ => bail!("top level object is not a dictionary"),
         };
 
         let announce = Tracker::new(
@@ -368,7 +377,7 @@ impl Torrent {
         let info_hash = compute_info_hash(&dict)?;
 
         let (file_tx, file_rx) = mpsc::channel::<Piece>(32);
-        tokio::spawn(Self::disk_writer_task(total_length, file_rx, name.clone()));
+        tokio::spawn(Self::file_writer_task(total_length, file_rx, name.clone()));
 
         Ok(Torrent {
             info_hash,
@@ -390,7 +399,7 @@ impl Torrent {
         })
     }
 
-    async fn disk_writer_task(
+    async fn file_writer_task(
         total_length: u64,
         mut rx: mpsc::Receiver<Piece>,
         name: String,
@@ -433,30 +442,16 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Arc
 
         let list = match tier.object_type() {
             ObjectType::List(l) => l,
-            _ => {
-                return Err(anyhow!(
-                    "Expected key {} to be of type {}",
-                    "announce-list",
-                    "list"
-                ));
-            }
+            _ => bail!("expected key announce-list to be of type list"),
         };
 
         for obj in list {
             let bytes = match obj.object_type() {
                 ObjectType::ByteArray(b) => b,
-                _ => {
-                    return Err(anyhow!(
-                        "Expected key {} to be {}",
-                        "announce-list",
-                        "byte string",
-                    )
-                    .into());
-                }
+                _ => bail!("Expected key announce-list to be byte string",),
             };
 
             let url = String::from_utf8(bytes.to_vec())?;
-
             trackers.push(Arc::new(Tracker::new(Url::parse(&url)?)));
         }
 
@@ -469,7 +464,7 @@ fn extract_announce_list(dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<Vec<Arc
 fn compute_info_hash(dict: &BTreeMap<Vec<u8>, Object>) -> Result<[u8; 20]> {
     let info = dict
         .get(b"info".as_slice())
-        .ok_or(anyhow!("Missing key info"))?;
+        .ok_or(anyhow!("missing key info"))?;
     Ok(Sha1::digest(&info.bytes()).into())
 }
 
@@ -480,7 +475,7 @@ fn extract_pieces(info_dict: &BTreeMap<Vec<u8>, Object>) -> Result<Vec<[u8; 20]>
 
 fn chunk_array<const N: usize>(data: &[u8]) -> Result<Vec<[u8; N]>> {
     if data.len() % N != 0 {
-        return Err(anyhow!("Length {} is not a mupliple of {}", data.len(), N));
+        return Err(anyhow!("length {} is not a mupliple of {N}", data.len()));
     }
 
     let mut result = Vec::with_capacity(data.len() / N);

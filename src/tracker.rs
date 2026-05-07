@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use url::Url;
 
 use crate::bencode::{
@@ -65,7 +65,7 @@ impl Tracker {
 
         let dict = match obj.object_type() {
             ObjectType::Dictionary(d) => d,
-            _ => return Err(anyhow!("Expected a dictionary")),
+            _ => bail!("expected a dictionary"),
         };
 
         *self.interval.lock().unwrap() =

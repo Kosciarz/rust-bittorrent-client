@@ -134,7 +134,7 @@ fn convert_info_dictionary(torrent: &Torrent) -> ObjectType {
 
 fn get_value<'a>(dict: &'a BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Result<&'a Object> {
     dict.get(key).ok_or(anyhow!(
-        "Missing key {}",
+        "missing key {}",
         String::from_utf8_lossy(key).to_string()
     ))
 }
@@ -145,7 +145,7 @@ pub fn extract_num(dict: &BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Result<i64> 
     match value.object_type() {
         ObjectType::Number(num) => Ok(*num),
         _ => Err(anyhow!(
-            "Expected key {} to be of type {}",
+            "expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
             "number",
         )),
@@ -158,7 +158,7 @@ pub fn extract_byte_array(dict: &BTreeMap<Vec<u8>, Object>, key: &[u8]) -> Resul
     match value.object_type() {
         ObjectType::ByteArray(b) => Ok(b.to_vec()),
         _ => Err(anyhow!(
-            "Expected key {} to be of type {}",
+            "expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
             "byte array",
         )),
@@ -178,7 +178,7 @@ pub fn extract_list<'a>(
     match value.object_type() {
         ObjectType::List(l) => Ok(l),
         _ => Err(anyhow!(
-            "Expected key {} to be of type {}",
+            "expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
             "list",
         )),
@@ -194,7 +194,7 @@ pub fn extract_dict<'a>(
     match value.object_type() {
         ObjectType::Dictionary(d) => Ok(d),
         _ => Err(anyhow!(
-            "Expected key {} to be of type {}",
+            "expected key {} to be of type {}",
             String::from_utf8_lossy(key).to_string(),
             "dictionary",
         )),

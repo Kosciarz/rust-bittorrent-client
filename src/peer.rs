@@ -121,30 +121,30 @@ impl PeerConnection {
         let mut stream =
             match timeout(Duration::from_secs(5), TcpStream::connect(&peer.addr())).await {
                 Ok(Ok(s)) => s,
-                Ok(Err(e)) => return Err(anyhow!("Connection failed: {e}")),
-                Err(_) => return Err(anyhow!("Connection timed out")),
+                Ok(Err(e)) => return Err(anyhow!("connection failed: {e}")),
+                Err(_) => return Err(anyhow!("connection timed out")),
             };
 
         let handshake = &Self::build_handshake(info_hash, peer_id);
         if let Err(e) = stream.write_all(handshake).await {
-            return Err(anyhow!("Failed to send handshake: {e}"));
+            return Err(anyhow!("failed to send handshake: {e}"));
         }
 
         let mut buf = [0u8; HANDSHAKE_SIZE];
         if let Err(e) = stream.read_exact(&mut buf).await {
-            return Err(anyhow!("Failed to read handshake: {e}"));
+            return Err(anyhow!("failed to read handshake: {e}"));
         }
 
         if buf[0] != 19 {
-            return Err(anyhow!("Invalid pstrlen"));
+            return Err(anyhow!("invalid pstrlen"));
         }
 
         if &buf[1..20] != b"BitTorrent protocol" {
-            return Err(anyhow!("Invalid pstr"));
+            return Err(anyhow!("invalid pstr"));
         }
 
         if &buf[28..48] != info_hash {
-            return Err(anyhow!("Info hash does not match"));
+            return Err(anyhow!("info hash does not match"));
         }
 
         peer.peer_id = buf[48..68].try_into().unwrap();
@@ -209,7 +209,7 @@ impl PeerConnection {
                 }
                 Message::KeepAlive => continue,
                 msg => {
-                    println!("Ignoring during init: {:?}", msg);
+                    println!("ignoring during init: {:?}", msg);
                 }
             }
 
@@ -248,14 +248,14 @@ impl PeerConnection {
                     block,
                 } => {
                     if index as usize != piece_index {
-                        return Err(anyhow!("Received block for wrong piece"));
+                        return Err(anyhow!("received block for wrong piece"));
                     }
 
                     piece_buf[(begin as usize)..(begin as usize + block.len())]
                         .copy_from_slice(&block);
                     blocks_received += 1;
                 }
-                Message::Choke => return Err(anyhow!("Peer choked during download")),
+                Message::Choke => return Err(anyhow!("peer choked during download")),
                 Message::Unchoke => continue,
                 Message::KeepAlive => continue,
                 msg => return Err(anyhow!("unexpected message: {:?}", msg)),
@@ -396,7 +396,7 @@ impl Message {
     }
 
     fn decode(buf: &[u8]) -> Result<Message> {
-        let id = buf.first().ok_or_else(|| anyhow!("Id missing"))?;
+        let id = buf.first().ok_or_else(|| anyhow!("id missing"))?;
         let buf = &buf[1..];
 
         Ok(match id {
@@ -409,7 +409,7 @@ impl Message {
             6 => Self::decode_request(buf),
             7 => Self::decode_piece(buf),
             8 => Self::decode_cancel(buf),
-            _ => return Err(anyhow!("Invalid id")),
+            _ => return Err(anyhow!("invalid id")),
         })
     }
 
