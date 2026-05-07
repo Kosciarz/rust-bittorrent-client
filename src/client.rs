@@ -31,6 +31,7 @@ impl Client {
         torrent.download(self).await?;
 
         println!("download completed");
+
         Ok(())
     }
 }

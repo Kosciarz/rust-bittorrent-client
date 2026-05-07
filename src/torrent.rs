@@ -20,6 +20,7 @@ use tokio::{
     },
     task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{
@@ -147,18 +148,22 @@ impl Torrent {
     pub async fn download(&self, client: &Client) -> Result<()> {
         let (peer_tx, peer_rx) = mpsc::channel::<Vec<Peer>>(1);
 
+        let cancel = CancellationToken::new();
+
         let announce_task = tokio::spawn({
             let torrent = self.clone();
             let client = client.clone();
+            let cancel = cancel.clone();
 
-            async move { torrent.run_announce_loop(peer_tx, &client).await }
+            async move { torrent.run_announce_loop(peer_tx, &client, cancel).await }
         });
 
         let download_task = tokio::spawn({
             let torrent = self.clone();
             let client = client.clone();
+            let cancel = cancel.clone();
 
-            async move { torrent.run_download_loop(peer_rx, &client).await }
+            async move { torrent.run_download_loop(peer_rx, &client, cancel).await }
         });
 
         let (announce_result, download_result) = tokio::join!(announce_task, download_task);
@@ -169,7 +174,12 @@ impl Torrent {
         Ok(())
     }
 
-    async fn run_announce_loop(&self, peer_tx: Sender<Vec<Peer>>, client: &Client) -> Result<()> {
+    async fn run_announce_loop(
+        &self,
+        peer_tx: Sender<Vec<Peer>>,
+        client: &Client,
+        cancel: CancellationToken,
+    ) -> Result<()> {
         let mut addr_set = HashSet::new();
 
         loop {
@@ -200,7 +210,10 @@ impl Torrent {
                 }
             }
 
-            tokio::time::sleep(self.tracker.interval()).await;
+            tokio::select! {
+                _ = tokio::time::sleep(self.tracker.interval()) => {},
+                _ = cancel.cancelled() => return Ok(())
+            }
         }
     }
 
@@ -239,6 +252,7 @@ impl Torrent {
         &self,
         mut peer_rx: mpsc::Receiver<Vec<Peer>>,
         client: &Client,
+        cancel: CancellationToken,
     ) -> Result<()> {
         let mut join_set = JoinSet::new();
 
@@ -256,10 +270,14 @@ impl Torrent {
 
                     if self.is_completed().await {
                         join_set.abort_all();
-                        break Ok(());
+                        cancel.cancel();
+                        return Ok(());
                     }
                 }
-                else => return Err(anyhow!("ran out of peers before download completed")),
+                else => {
+                    cancel.cancel();
+                    bail!("ran out of peers before download completed");
+                },
             }
         }
     }
