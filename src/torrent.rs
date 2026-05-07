@@ -395,7 +395,12 @@ impl Torrent {
         let info_hash = compute_info_hash(&dict)?;
 
         let (file_tx, file_rx) = mpsc::channel::<Piece>(32);
-        tokio::spawn(Self::file_writer_task(total_length, file_rx, name.clone()));
+        tokio::spawn(Self::file_writer_task(
+            total_length,
+            piece_length,
+            file_rx,
+            name.clone(),
+        ));
 
         Ok(Torrent {
             info_hash,
@@ -419,6 +424,7 @@ impl Torrent {
 
     async fn file_writer_task(
         total_length: u64,
+        piece_length: u64,
         mut rx: mpsc::Receiver<Piece>,
         name: String,
     ) -> Result<()> {
@@ -432,10 +438,8 @@ impl Torrent {
         file.set_len(total_length).await?;
 
         while let Some(piece) = rx.recv().await {
-            file.seek(io::SeekFrom::Start(
-                piece.index as u64 * piece.length as u64,
-            ))
-            .await?;
+            file.seek(io::SeekFrom::Start(piece.index as u64 * piece_length))
+                .await?;
 
             let data = match piece.state {
                 PieceState::Downloaded { data } => data,
