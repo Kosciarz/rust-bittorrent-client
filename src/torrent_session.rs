@@ -55,7 +55,7 @@ pub struct TorrentSession {
 }
 
 impl TorrentSession {
-    pub async fn spawn(info: Arc<TorrentInfo>) -> Result<Self> {
+    pub async fn new(info: Arc<TorrentInfo>) -> Result<Self> {
         let (file_tx, file_rx) = mpsc::channel::<CompletedPiece>(32);
         let mut file_writer =
             FileWriter::new(info.length, info.name.clone(), info.piece_length, file_rx).await?;

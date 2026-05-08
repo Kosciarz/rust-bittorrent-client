@@ -30,7 +30,7 @@ impl Client {
         let torrent = TorrentInfo::from_file(path).await?;
         let torrent = Arc::new(torrent);
 
-        let session = TorrentSession::spawn(torrent).await?;
+        let session = TorrentSession::new(torrent).await?;
         session.run(self).await?;
 
         println!("Download completed");
