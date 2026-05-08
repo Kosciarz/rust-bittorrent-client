@@ -6,7 +6,8 @@ mod file_writer;
 mod peer;
 mod piece;
 mod piece_assembler;
-mod torrent;
+mod torrent_info;
+mod torrent_session;
 mod tracker;
 
 #[tokio::main]

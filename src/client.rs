@@ -1,6 +1,6 @@
-use std::{env, path::Path};
+use std::{env, path::Path, sync::Arc};
 
-use crate::torrent::Torrent;
+use crate::{torrent_info::TorrentInfo, torrent_session::TorrentSession};
 use anyhow::{Result};
 use rand::RngExt;
 
@@ -27,8 +27,11 @@ impl Client {
         let path = args[1].to_string();
         let path = Path::new(&path);
 
-        let torrent = Torrent::load_from_file(path).await?;
-        torrent.download(self).await?;
+        let torrent = TorrentInfo::from_file(path).await?;
+        let torrent = Arc::new(torrent);
+
+        let session = TorrentSession::spawn(torrent).await?;
+        session.run(self).await?;
 
         println!("Download completed");
 

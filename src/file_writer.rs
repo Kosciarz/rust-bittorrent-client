@@ -12,7 +12,7 @@ use crate::piece::CompletedPiece;
 pub struct FileWriter {
     piece_length: u32,
 
-    file_rx: mpsc::Receiver<CompletedPiece>,
+    rx: mpsc::Receiver<CompletedPiece>,
     file: File,
 }
 
@@ -34,13 +34,13 @@ impl FileWriter {
 
         Ok(Self {
             piece_length,
-            file_rx,
+            rx: file_rx,
             file,
         })
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        while let Some(completed) = self.file_rx.recv().await {
+        while let Some(completed) = self.rx.recv().await {
             let offset = (completed.index as u64) * (self.piece_length as u64);
             self.file.seek(io::SeekFrom::Start(offset)).await?;
 

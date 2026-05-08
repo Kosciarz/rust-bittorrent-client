@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::torrent::Torrent;
+use crate::torrent_info::TorrentInfo;
 
 use anyhow::{Result, anyhow};
 
@@ -33,13 +33,13 @@ impl Object {
 }
 
 impl Object {
-    pub fn from_torrent(torrent: &Torrent) -> Self {
+    pub fn from_torrent(torrent: &TorrentInfo) -> Self {
         let mut dict = BTreeMap::new();
 
         dict.insert(
             b"announce".to_vec(),
             Object::new(
-                ObjectType::ByteArray(torrent.announce().url().as_str().as_bytes().to_vec()),
+                ObjectType::ByteArray(torrent.announce.as_str().as_bytes().to_vec()),
                 Vec::new(),
             ),
         );
@@ -50,21 +50,21 @@ impl Object {
         dict.insert(
             b"comment".to_vec(),
             Object::new(
-                ObjectType::ByteArray(torrent.comment().as_bytes().to_vec()),
+                ObjectType::ByteArray(torrent.comment.as_bytes().to_vec()),
                 Vec::new(),
             ),
         );
         dict.insert(
             b"created by".to_vec(),
             Object::new(
-                ObjectType::ByteArray(torrent.created_by().as_bytes().to_vec()),
+                ObjectType::ByteArray(torrent.created_by.as_bytes().to_vec()),
                 Vec::new(),
             ),
         );
         dict.insert(
             b"creation date".to_vec(),
             Object::new(
-                ObjectType::Number(torrent.creation_date() as i64),
+                ObjectType::Number(torrent.creation_date as i64),
                 Vec::new(),
             ),
         );
@@ -77,15 +77,15 @@ impl Object {
     }
 }
 
-fn convert_announce_list(torrent: &Torrent) -> ObjectType {
+fn convert_announce_list(torrent: &TorrentInfo) -> ObjectType {
     let mut announce_list = Vec::new();
 
-    for trackers in torrent.announce_list() {
+    for trackers in &torrent.announce_list {
         let mut list = Vec::new();
 
         for tracker in trackers {
             list.push(Object::new(
-                ObjectType::ByteArray(tracker.url().as_str().as_bytes().to_vec()),
+                ObjectType::ByteArray(tracker.as_str().as_bytes().to_vec()),
                 Vec::new(),
             ));
         }
@@ -96,17 +96,17 @@ fn convert_announce_list(torrent: &Torrent) -> ObjectType {
     ObjectType::List(announce_list)
 }
 
-fn convert_info_dictionary(torrent: &Torrent) -> ObjectType {
+fn convert_info_dictionary(torrent: &TorrentInfo) -> ObjectType {
     let mut dict = BTreeMap::new();
 
     dict.insert(
         b"length".to_vec(),
-        Object::new(ObjectType::Number(torrent.length() as i64), Vec::new()),
+        Object::new(ObjectType::Number(torrent.length as i64), Vec::new()),
     );
     dict.insert(
         b"name".to_vec(),
         Object::new(
-            ObjectType::ByteArray(torrent.name().as_bytes().to_vec()),
+            ObjectType::ByteArray(torrent.name.as_bytes().to_vec()),
             Vec::new(),
         ),
     );
@@ -114,7 +114,7 @@ fn convert_info_dictionary(torrent: &Torrent) -> ObjectType {
     dict.insert(
         b"piece length".to_vec(),
         Object::new(
-            ObjectType::Number(torrent.piece_length() as i64),
+            ObjectType::Number(torrent.piece_length as i64),
             Vec::new(),
         ),
     );

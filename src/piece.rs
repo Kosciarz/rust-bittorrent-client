@@ -14,7 +14,6 @@ pub struct PieceInfo {
     pub index: usize,
     pub length: u32,
     pub hash: [u8; 20],
-    pub state: PieceState,
 }
 
 #[derive(Debug, Clone)]
