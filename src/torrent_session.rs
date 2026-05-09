@@ -10,7 +10,6 @@ use std::{
 use anyhow::{Context, Result, bail};
 use tokio::{
     sync::{
-        Mutex,
         broadcast::{self, error::TryRecvError},
         mpsc::{self, Sender},
     },
@@ -21,9 +20,10 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     client::Client,
     file_writer::FileWriter,
-    peer::{BitField, Peer, PeerConnection},
-    piece::{ActivePiece, CompletedPiece, PieceState},
+    peer::{Peer, PeerConnection},
+    piece::{ActivePiece, CompletedPiece},
     piece_assembler::PieceAssembler,
+    piece_picker::PiecePicker,
     torrent_info::TorrentInfo,
     tracker::{AnnounceStats, Tracker},
 };
@@ -43,13 +43,13 @@ pub struct Stats {
 #[derive(Debug, Clone)]
 pub struct TorrentSession {
     pub info: Arc<TorrentInfo>,
+    stats: Arc<Stats>,
+
+    piece_picker: Arc<PiecePicker>,
 
     tracker: Arc<Tracker>,
     tracker_list: Vec<Vec<Arc<Tracker>>>,
 
-    stats: Arc<Stats>,
-
-    piece_states: Arc<Mutex<Vec<PieceState>>>,
     event_tx: broadcast::Sender<TorrentEvent>,
     piece_tx: mpsc::Sender<ActivePiece>,
 }
@@ -86,25 +86,18 @@ impl TorrentSession {
             left: info.length.into(),
             uploaded: 0.into(),
         });
-        let piece_states = Arc::new(Mutex::new(vec![PieceState::Missing; info.pieces.len()]));
+
+        let piece_picker = Arc::new(PiecePicker::new(info.pieces.len()));
 
         Ok(Self {
             info,
+            stats,
+            piece_picker,
             tracker,
             tracker_list,
-            stats,
-            piece_states,
             event_tx,
             piece_tx,
         })
-    }
-
-    pub async fn is_completed(&self) -> bool {
-        self.piece_states
-            .lock()
-            .await
-            .iter()
-            .all(|state| *state == PieceState::Done)
     }
 
     pub async fn run(&self, client: &Client) -> Result<()> {
@@ -199,7 +192,7 @@ impl TorrentSession {
                         Err(e) => eprintln!("peer task panicked: {e}"),
                     }
 
-                    if self.is_completed().await {
+                    if self.piece_picker.is_finished().await {
                         join_set.abort_all();
                         cancel.cancel();
                         return Ok(());
@@ -262,7 +255,8 @@ impl TorrentSession {
                 }
             }
 
-            let Some(piece_idx) = self.pick_piece(conn.peer().bitfield()).await else {
+            let Some(piece_idx) = self.piece_picker.claim_piece(conn.peer().bitfield()).await
+            else {
                 break;
             };
 
@@ -279,7 +273,7 @@ impl TorrentSession {
             let piece = match res {
                 Ok(p) => p,
                 Err(e) => {
-                    self.piece_states.lock().await[piece_idx] = PieceState::Missing;
+                    self.piece_picker.mark_failed(piece_idx).await;
                     return Err(e);
                 }
             };
@@ -293,7 +287,7 @@ impl TorrentSession {
                 .left
                 .fetch_sub(piece.length as u64, Ordering::Relaxed);
 
-            self.piece_states.lock().await[piece.index] = PieceState::Done;
+            self.piece_picker.mark_completed(piece.index).await;
 
             let _ = self.event_tx.send(TorrentEvent::PieceCompleted {
                 piece_index: piece.index,
@@ -303,14 +297,5 @@ impl TorrentSession {
         }
 
         Ok(())
-    }
-
-    async fn pick_piece(&self, bitfield: &BitField) -> Option<usize> {
-        let mut piece_states = self.piece_states.lock().await;
-        let idx = piece_states.iter().enumerate().find_map(|(i, state)| {
-            (bitfield.has_piece(i) && *state == PieceState::Missing).then_some(i)
-        })?;
-        piece_states[idx] = PieceState::InProgress;
-        Some(idx)
     }
 }

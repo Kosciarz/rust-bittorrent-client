@@ -2,13 +2,6 @@ use sha1::{Digest, Sha1};
 
 pub const BLOCK_SIZE: u32 = 16_384;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum PieceState {
-    Missing,
-    InProgress,
-    Done,
-}
-
 #[derive(Debug, Clone)]
 pub struct PieceInfo {
     pub index: usize,

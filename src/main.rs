@@ -5,6 +5,7 @@ mod client;
 mod file_writer;
 mod peer;
 mod piece;
+mod piece_picker;
 mod piece_assembler;
 mod torrent_info;
 mod torrent_session;
