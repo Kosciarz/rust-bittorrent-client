@@ -10,6 +10,7 @@ mod piece_assembler;
 mod torrent_info;
 mod torrent_session;
 mod tracker;
+mod bitfield;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -1,6 +1,6 @@
 use tokio::sync::Mutex;
 
-use crate::peer::BitField;
+use crate::bitfield::BitField;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PieceState {
