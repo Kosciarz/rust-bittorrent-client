@@ -10,8 +10,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use tokio::{
     sync::{
-        broadcast::{self, error::TryRecvError},
         mpsc::{self, Sender},
+        oneshot,
     },
     task::JoinSet,
 };
@@ -22,16 +22,11 @@ use crate::{
     file_writer::FileWriter,
     peer::{Peer, PeerConnection},
     piece::{ActivePiece, CompletedPiece},
-    piece_assembler::PieceAssembler,
-    piece_picker::PiecePicker,
+    piece_assembler::PieceValidator,
+    piece_picker::{PieceEvent, PiecePicker, PiecePickerCommand},
     torrent_info::TorrentInfo,
     tracker::{AnnounceStats, Tracker},
 };
-
-#[derive(Debug, Clone)]
-pub enum TorrentEvent {
-    PieceCompleted { piece_index: usize },
-}
 
 #[derive(Debug)]
 pub struct Stats {
@@ -45,28 +40,36 @@ pub struct TorrentSession {
     pub info: Arc<TorrentInfo>,
     stats: Arc<Stats>,
 
-    piece_picker: Arc<PiecePicker>,
-
     tracker: Arc<Tracker>,
     tracker_list: Vec<Vec<Arc<Tracker>>>,
 
-    event_tx: broadcast::Sender<TorrentEvent>,
+    piece_event_tx: mpsc::Sender<PieceEvent>,
+    piece_picker_event_tx: mpsc::Sender<PiecePickerCommand>,
     piece_tx: mpsc::Sender<ActivePiece>,
 }
 
 impl TorrentSession {
     pub async fn new(info: Arc<TorrentInfo>) -> Result<Self> {
-        let (file_tx, file_rx) = mpsc::channel::<CompletedPiece>(32);
+        let (piece_event_tx, piece_event_rx) = mpsc::channel(256);
+
+        let (piece_picker_event_tx, piece_picker_event_rx) = mpsc::channel(32);
+        let mut piece_picker =
+        PiecePicker::new(info.pieces.len(), piece_event_rx, piece_picker_event_rx);
+        tokio::spawn(async move { piece_picker.run().await });
+
+        let (completed_piece_tx, completed_piece_rx) = mpsc::channel::<CompletedPiece>(32);
         let mut file_writer =
-            FileWriter::new(info.length, info.name.clone(), info.piece_length, file_rx).await?;
+        FileWriter::new(info.length, info.name.clone(), info.piece_length, completed_piece_rx, piece_event_tx.clone()).await?;
         tokio::spawn(async move { file_writer.run().await });
 
         let (piece_tx, piece_rx) = mpsc::channel::<ActivePiece>(32);
-        let mut piece_assembler =
-            PieceAssembler::new(info.piece_hashes(), piece_rx, file_tx.clone());
+        let mut piece_assembler = PieceValidator::new(
+            info.piece_hashes(),
+            piece_rx,
+            completed_piece_tx.clone(),
+            piece_event_tx.clone(),
+        );
         tokio::spawn(async move { piece_assembler.run().await });
-
-        let (event_tx, _) = broadcast::channel(256);
 
         let tracker = Arc::new(Tracker::new(info.announce.clone()));
 
@@ -87,15 +90,13 @@ impl TorrentSession {
             uploaded: 0.into(),
         });
 
-        let piece_picker = Arc::new(PiecePicker::new(info.pieces.len()));
-
         Ok(Self {
             info,
             stats,
-            piece_picker,
             tracker,
             tracker_list,
-            event_tx,
+            piece_event_tx,
+            piece_picker_event_tx,
             piece_tx,
         })
     }
@@ -191,12 +192,6 @@ impl TorrentSession {
                         Ok(Err(e)) => eprintln!("peer connection failed: {e}"),
                         Err(e) => eprintln!("peer task panicked: {e}"),
                     }
-
-                    if self.piece_picker.is_finished().await {
-                        join_set.abort_all();
-                        cancel.cancel();
-                        return Ok(());
-                    }
                 }
                 else => {
                     cancel.cancel();
@@ -239,23 +234,17 @@ impl TorrentSession {
     }
 
     async fn download_from_peer(&self, conn: &mut PeerConnection) -> Result<()> {
-        let mut event_rx = self.event_tx.subscribe();
-
         loop {
-            loop {
-                match event_rx.try_recv() {
-                    Ok(TorrentEvent::PieceCompleted { piece_index }) => {
-                        conn.send_have(piece_index).await?;
-                    }
-                    Err(TryRecvError::Empty) => break,
-                    Err(TryRecvError::Lagged(n)) => {
-                        println!("have broadcast lagged by {n}")
-                    }
-                    Err(TryRecvError::Closed) => return Ok(()),
-                }
-            }
+            let (tx, rx) = oneshot::channel();
 
-            let Some(piece_idx) = self.piece_picker.claim_piece(conn.bitfield()).await else {
+            self.piece_picker_event_tx
+                .send(PiecePickerCommand::RequestPiece {
+                    bitfield: conn.bitfield().clone(),
+                    response_tx: tx,
+                })
+                .await?;
+
+            let Some(piece_idx) = rx.await? else {
                 break;
             };
 
@@ -272,7 +261,12 @@ impl TorrentSession {
             let piece = match res {
                 Ok(p) => p,
                 Err(e) => {
-                    self.piece_picker.mark_failed(piece_idx).await;
+                    let _ = self
+                        .piece_event_tx
+                        .send(PieceEvent::DownloadFailed {
+                            piece_index: piece_idx,
+                        })
+                        .await;
                     return Err(e);
                 }
             };
@@ -285,12 +279,6 @@ impl TorrentSession {
             self.stats
                 .left
                 .fetch_sub(piece.length as u64, Ordering::Relaxed);
-
-            self.piece_picker.mark_completed(piece.index).await;
-
-            let _ = self.event_tx.send(TorrentEvent::PieceCompleted {
-                piece_index: piece.index,
-            });
 
             println!("Downloaded piece {}", piece.index);
         }

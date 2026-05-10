@@ -1,36 +1,49 @@
 use tokio::sync::mpsc;
 
-use crate::piece::{ActivePiece, CompletedPiece};
+use crate::{
+    piece::{ActivePiece, CompletedPiece},
+    piece_picker::PieceEvent,
+};
 
 #[derive(Debug)]
-pub struct PieceAssembler {
+pub struct PieceValidator {
     piece_hashes: Vec<[u8; 20]>,
 
-    rx: mpsc::Receiver<ActivePiece>,
-    tx: mpsc::Sender<CompletedPiece>,
+    active_piece_rx: mpsc::Receiver<ActivePiece>,
+    completed_piece_tx: mpsc::Sender<CompletedPiece>,
+    piece_event_tx: mpsc::Sender<PieceEvent>,
 }
 
-impl PieceAssembler {
+impl PieceValidator {
     pub fn new(
         piece_hashes: Vec<[u8; 20]>,
-        rx: mpsc::Receiver<ActivePiece>,
-        tx: mpsc::Sender<CompletedPiece>,
+        active_piece_rx: mpsc::Receiver<ActivePiece>,
+        completed_piece_tx: mpsc::Sender<CompletedPiece>,
+        piece_event_tx: mpsc::Sender<PieceEvent>,
     ) -> Self {
         Self {
             piece_hashes,
-            rx,
-            tx,
+            active_piece_rx,
+            completed_piece_tx,
+            piece_event_tx,
         }
     }
 
     pub async fn run(&mut self) {
-        while let Some(mut piece) = self.rx.recv().await {
+        while let Some(mut piece) = self.active_piece_rx.recv().await {
             if piece.verify(&self.piece_hashes[piece.index]) {
                 let _ = self
-                    .tx
+                    .completed_piece_tx
                     .send(CompletedPiece {
                         index: piece.index,
                         data: std::mem::take(&mut piece.data),
+                    })
+                    .await;
+            } else {
+                let _ = self
+                    .piece_event_tx
+                    .send(PieceEvent::HashMismatch {
+                        piece_index: piece.index,
                     })
                     .await;
             }

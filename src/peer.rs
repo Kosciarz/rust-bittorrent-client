@@ -57,7 +57,7 @@ impl PeerConnection {
     }
 
     pub async fn connect(
-        mut peer: Peer,
+        peer: Peer,
         info_hash: &[u8; 20],
         peer_id: &[u8; 20],
         num_pieces: usize,
