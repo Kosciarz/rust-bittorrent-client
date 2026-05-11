@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use tokio::{sync::mpsc, task::JoinSet};
@@ -19,6 +19,7 @@ pub struct PeerManager {
     cancellation_token: CancellationToken,
 
     join_set: JoinSet<Result<()>>,
+    address_set: HashSet<SocketAddr>,
 
     peer_rx: mpsc::Receiver<Vec<Peer>>,
     active_piece_tx: mpsc::Sender<ActivePiece>,
@@ -41,6 +42,7 @@ impl PeerManager {
             client,
             cancellation_token,
             join_set: JoinSet::new(),
+            address_set: HashSet::new(),
             peer_rx,
             active_piece_tx,
             piece_picker_event_tx,
@@ -71,6 +73,10 @@ impl PeerManager {
 
     fn process_peers(&mut self, peers: Vec<Peer>) {
         for peer in peers {
+            if !self.address_set.insert(peer.addr) {
+                continue;
+            }
+
             let info = Arc::clone(&self.info);
             let client = self.client.clone();
             let active_piece_tx = self.active_piece_tx.clone();

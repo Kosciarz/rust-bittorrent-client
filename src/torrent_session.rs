@@ -1,12 +1,10 @@
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
-use tokio::{
-    sync::{
-        Mutex,
-        mpsc::{self, Sender},
-        oneshot,
-    },
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Sender},
+    oneshot,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -154,8 +152,6 @@ impl TorrentSession {
         client: &Client,
         cancel: CancellationToken,
     ) -> Result<()> {
-        let mut addr_set = HashSet::new();
-
         let mut interval = tokio::time::interval(self.tracker.interval());
 
         loop {
@@ -181,12 +177,7 @@ impl TorrentSession {
                         )
                         .await?;
 
-                    let mut peers = Vec::new();
-                    for addr in addrs {
-                        if addr_set.insert(addr) {
-                            peers.push(Peer { addr });
-                        }
-                    }
+                    let peers: Vec<Peer> = addrs.iter().map(|addr| Peer {addr: *addr}).collect();
 
                     if !peers.is_empty() {
                         peer_tx.send(peers).await?;
