@@ -51,7 +51,6 @@ impl FileWriter {
             self.file.seek(io::SeekFrom::Start(offset)).await?;
 
             self.file.write_all(&completed.data).await?;
-            self.file.flush().await?;
 
             let _ = self
                 .piece_event_tx
