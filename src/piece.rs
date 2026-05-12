@@ -28,3 +28,10 @@ pub struct CompletedPiece {
     pub index: usize,
     pub data: Vec<u8>,
 }
+
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub index: u32,
+    pub begin: u32,
+    pub block: Vec<u8>,
+}

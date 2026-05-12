@@ -10,7 +10,7 @@ use tokio::{
 
 use crate::{
     bitfield::BitField,
-    piece::{ActivePiece, BLOCK_SIZE},
+    piece::{ActivePiece, BLOCK_SIZE, Block},
     piece_picker::{PieceEvent, PiecePickerCommand},
     torrent_info::TorrentInfo,
 };
@@ -190,30 +190,8 @@ impl PeerConnection {
 
     pub async fn wait_until_ready(&mut self) -> Result<()> {
         loop {
-            match self.read_message().await? {
-                Message::BitField(b) => {
-                    self.bitfield = BitField::new(b, self.info.pieces.len());
-                }
-                Message::Have(index) => {
-                    self.bitfield.set_piece(index as usize);
-                }
-                Message::Choke => {
-                    self.peer_choking = true;
-                }
-                Message::Unchoke => {
-                    self.peer_choking = false;
-                }
-                Message::Interested => {
-                    self.peer_interested = true;
-                }
-                Message::NotInterested => {
-                    self.peer_interested = false;
-                }
-                Message::KeepAlive => continue,
-                msg => {
-                    println!("ignoring during init: {:?}", msg);
-                }
-            }
+            let msg = self.read_message().await?;
+            self.handle_message(msg);
 
             if !self.peer_choking {
                 return Ok(());
@@ -238,40 +216,14 @@ impl PeerConnection {
                 Err(_) => bail!("peer timed out (no messages for 60s)"),
             };
 
-            match msg {
-                Message::Piece {
-                    index,
-                    begin,
-                    block,
-                } => {
-                    if index as usize != piece_index {
-                        bail!("received block for wrong piece");
-                    }
+            if let Some(block) = self.handle_message(msg) {
+                if block.index as usize != piece_index {
+                    bail!("received block for wrong piece");
+                }
 
-                    piece_buf[(begin as usize)..(begin as usize + block.len())]
-                        .copy_from_slice(&block);
-                    blocks_received += 1;
-                }
-                Message::BitField(b) => {
-                    self.bitfield = BitField::new(b, self.info.pieces.len());
-                }
-                Message::Have(index) => {
-                    self.bitfield.set_piece(index as usize);
-                }
-                Message::Choke => {
-                    self.peer_choking = true;
-                }
-                Message::Unchoke => {
-                    self.peer_choking = false;
-                }
-                Message::Interested => {
-                    self.peer_interested = true;
-                }
-                Message::NotInterested => {
-                    self.peer_interested = false;
-                }
-                Message::KeepAlive => continue,
-                msg => println!("unexpected message: {:?}", msg),
+                piece_buf[(block.begin as usize)..(block.begin as usize + block.block.len())]
+                    .copy_from_slice(&block.block);
+                blocks_received += 1;
             }
         }
 
@@ -285,6 +237,45 @@ impl PeerConnection {
             .await;
 
         Ok(())
+    }
+
+    fn handle_message(&mut self, msg: Message) -> Option<Block> {
+        match msg {
+            Message::Choke => {
+                self.peer_choking = true;
+                None
+            }
+            Message::Unchoke => {
+                self.peer_choking = false;
+                None
+            }
+            Message::Interested => {
+                self.peer_interested = true;
+                None
+            }
+            Message::NotInterested => {
+                self.peer_interested = false;
+                None
+            }
+            Message::Have(i) => {
+                self.bitfield.set_piece(i as usize);
+                None
+            }
+            Message::BitField(b) => {
+                self.bitfield = BitField::new(b, self.info.pieces.len());
+                None
+            }
+            Message::Piece {
+                index,
+                begin,
+                block,
+            } => Some(Block {
+                index,
+                begin,
+                block,
+            }),
+            _ => None,
+        }
     }
 
     async fn request_block(
