@@ -27,7 +27,6 @@ pub struct PeerConnection {
 
     peer: Peer,
     stream: TcpStream,
-    num_pieces: usize,
     peer_id: [u8; 20],
     bitfield: BitField,
     am_choking: bool,
@@ -55,14 +54,6 @@ impl PeerConnection {
 
     pub fn bitfield(&self) -> &BitField {
         &self.bitfield
-    }
-
-    fn bitfield_mut(&mut self) -> &mut BitField {
-        &mut self.bitfield
-    }
-
-    pub fn set_bitfield(&mut self, bitfield: BitField) {
-        self.bitfield = bitfield;
     }
 
     pub async fn connect(
@@ -112,7 +103,6 @@ impl PeerConnection {
             info,
             peer,
             stream,
-            num_pieces,
             peer_id: buf[48..68].try_into().unwrap(),
             bitfield: BitField::empty(num_pieces),
             am_choking: true,
@@ -202,7 +192,7 @@ impl PeerConnection {
         loop {
             match self.read_message().await? {
                 Message::BitField(b) => {
-                    self.bitfield = BitField::new(b, self.num_pieces);
+                    self.bitfield = BitField::new(b, self.info.pieces.len());
                 }
                 Message::Have(index) => {
                     self.bitfield.set_piece(index as usize);
@@ -263,7 +253,7 @@ impl PeerConnection {
                     blocks_received += 1;
                 }
                 Message::BitField(b) => {
-                    self.bitfield = BitField::new(b, self.num_pieces);
+                    self.bitfield = BitField::new(b, self.info.pieces.len());
                 }
                 Message::Have(index) => {
                     self.bitfield.set_piece(index as usize);

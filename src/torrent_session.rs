@@ -10,9 +10,9 @@ use crate::{
     peer::Peer,
     peer_manager::PeerManager,
     piece::{ActivePiece, CompletedPiece},
-    piece_picker::{PieceEvent, PiecePicker, PiecePickerCommand},
+    piece_picker::PiecePicker,
     piece_validator::PieceValidator,
-    stats_manager::{StatsManager, StatsManagerCommand},
+    stats_manager::StatsManager,
     torrent_info::TorrentInfo,
     tracker_manager::TrackerManager,
 };
@@ -24,7 +24,7 @@ pub enum TorrentEvent {
 
 #[derive(Debug)]
 pub struct TorrentSession {
-    pub info: Arc<TorrentInfo>,
+    info: Arc<TorrentInfo>,
     cancellation_token: CancellationToken,
 
     torrent_event_rx: mpsc::Receiver<TorrentEvent>,
