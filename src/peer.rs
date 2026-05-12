@@ -234,6 +234,8 @@ impl PeerConnection {
                         .await?;
                     next_request += 1;
                 }
+            } else if self.peer_choking {
+                bail!("peer choked mid-download");
             }
         }
 
